@@ -15,6 +15,21 @@ docker build -t bexio-hosted-mcp .
 python3 scripts/fetch-spec.py          # regenerate openapi.json
 ```
 
+## Deploy
+
+Production: https://mcp.bextrack.com on the Raspberry Pi
+(`ssh pi`), in `~/dockerapps/mcp.bextrack.com` (compose file,
+`.env` with `PUBLIC_URL` and `HOST_PORT=8011`). The Pi's Cloudflare tunnel
+(dashboard-managed) routes the hostname to `http://localhost:8011` and
+terminates TLS. The Pi never builds; ship the image as a tar:
+
+```sh
+docker buildx build --platform linux/arm64 -t bexio-hosted-mcp:latest --load .
+docker save bexio-hosted-mcp:latest -o bexio-hosted-mcp.tar
+scp bexio-hosted-mcp.tar docker-compose.yml pi:dockerapps/mcp.bextrack.com/
+ssh pi 'cd ~/dockerapps/mcp.bextrack.com && docker load -i bexio-hosted-mcp.tar && docker compose up -d'
+```
+
 ## Layout
 
 - `main.go`: HTTP server, OAuth 401/metadata, the three MCP tools, request
