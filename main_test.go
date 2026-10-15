@@ -71,19 +71,6 @@ func connect(t *testing.T, endpoint, token string) *mcp.ClientSession {
 	return session
 }
 
-func toolNames(t *testing.T, session *mcp.ClientSession) []string {
-	t.Helper()
-	tools, err := session.ListTools(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var names []string
-	for _, tool := range tools.Tools {
-		names = append(names, tool.Name)
-	}
-	return names
-}
-
 func TestServer(t *testing.T) {
 	srv, auth, fake := setup(t)
 
@@ -276,8 +263,9 @@ func TestSignIn(t *testing.T) {
 
 	// The issued token is read-only, as consented, and unwraps to bexio's.
 	session := connect(t, srv.URL+"/mcp/acme", body["access_token"].(string))
-	if names := toolNames(t, session); slices.Contains(names, "bexio_write") || len(names) != 2 {
-		t.Fatalf("read-only tools: %v", names)
+	tools, err := session.ListTools(context.Background(), nil)
+	if err != nil || len(tools.Tools) != 2 || slices.ContainsFunc(tools.Tools, func(t *mcp.Tool) bool { return t.Name == "bexio_write" }) {
+		t.Fatalf("read-only tools: %v %v", tools, err)
 	}
 	session.CallTool(context.Background(), &mcp.CallToolParams{Name: "bexio_read", Arguments: map[string]any{"operation": "v3ShowMe"}})
 	if fake.api.Header.Get("Authorization") != "Bearer bexio-access" {

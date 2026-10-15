@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"html/template"
 	"log"
 	"net/http"
@@ -359,14 +360,12 @@ func (s *authServer) token(w http.ResponseWriter, r *http.Request) {
 	resp, err := client.Do(req)
 	if err == nil {
 		defer resp.Body.Close()
-		err = json.NewDecoder(resp.Body).Decode(&t)
-	}
-	if err != nil || resp.StatusCode != http.StatusOK || t.AccessToken == "" {
-		status := 0
-		if resp != nil {
-			status = resp.StatusCode
+		if err = json.NewDecoder(resp.Body).Decode(&t); resp.StatusCode != http.StatusOK {
+			err = errors.New(resp.Status)
 		}
-		log.Printf("token %s: bexio refused (%d, %v)", grantType, status, err)
+	}
+	if err != nil || t.AccessToken == "" {
+		log.Printf("token %s: bexio refused: %v", grantType, err)
 		oauthError(w, http.StatusBadRequest, "invalid_grant") // Claude expects exactly this to restart sign-in
 		return
 	}
