@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"io"
@@ -172,8 +173,11 @@ func TestSignIn(t *testing.T) {
 		t.Fatalf("issuer %q", meta.Issuer)
 	}
 
-	if resp := postJSON("/oauth/register", `{"redirect_uris":["http://evil.example.com/cb"]}`); resp.StatusCode != 400 {
-		t.Fatalf("plain http redirect registered: %d", resp.StatusCode)
+	// Plain http, OS protocol handlers and lookalike hosts are refused.
+	for _, uri := range []string{"http://evil.example.com/cb", "ms-msdt:id", "https://\u0441laude.ai/cb"} {
+		if resp := postJSON("/oauth/register", `{"redirect_uris":["`+uri+`"]}`); resp.StatusCode != 400 {
+			t.Fatalf("%s registered: %d", uri, resp.StatusCode)
+		}
 	}
 	resp = postJSON("/oauth/register", `{"redirect_uris":["https://client.example.com/cb","http://127.0.0.1/callback"],"client_name":"Test <b>"}`)
 	var reg struct {
@@ -185,18 +189,21 @@ func TestSignIn(t *testing.T) {
 	}
 
 	verifier := "client-verifier-0123456789012345678901234567890"
-	authorize := func(redirect string) *http.Response {
+	authorize := func(redirect string, responseType ...string) *http.Response {
 		resp, err := noRedirect.Get(srv.URL + "/oauth/authorize?" + url.Values{
-			"client_id": {reg.ClientID}, "redirect_uri": {redirect}, "response_type": {"code"}, "state": {"xyz"},
-			"code_challenge": {pkceChallenge(verifier)}, "code_challenge_method": {"S256"},
+			"client_id": {reg.ClientID}, "redirect_uri": {redirect}, "response_type": {cmp.Or(strings.Join(responseType, ""), "code")},
+			"state": {"xyz"}, "code_challenge": {pkceChallenge(verifier)}, "code_challenge_method": {"S256"},
 		}.Encode())
 		if err != nil {
 			t.Fatal(err)
 		}
 		return resp
 	}
-	if resp := authorize("https://evil.example.com/cb"); resp.StatusCode != 400 || resp.Header.Get("Location") != "" {
-		t.Fatalf("unregistered redirect: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	// Before consent nothing redirects, not even to a registered URI.
+	for _, resp := range []*http.Response{authorize("https://evil.example.com/cb"), authorize("https://client.example.com/cb", "token")} {
+		if resp.StatusCode != 400 || resp.Header.Get("Location") != "" {
+			t.Fatalf("bad authorize request: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+		}
 	}
 	if resp := authorize("http://127.0.0.1:53682/callback"); resp.StatusCode != 200 {
 		t.Fatalf("loopback on another port: %d", resp.StatusCode)
@@ -232,7 +239,22 @@ func TestSignIn(t *testing.T) {
 		t.Fatalf("redirect to bexio: %d %s", resp.StatusCode, toBexio)
 	}
 
-	resp, _ = noRedirect.Get(srv.URL + "/oauth/callback?" + url.Values{"code": {"bexio-code"}, "state": {toBexio.Query().Get("state")}}.Encode())
+	callback := func(withCookie bool) *http.Response {
+		req, _ := http.NewRequest("GET", srv.URL+"/oauth/callback?"+url.Values{"code": {"bexio-code"}, "state": {toBexio.Query().Get("state")}}.Encode(), nil)
+		if withCookie {
+			req.AddCookie(cookies[0])
+		}
+		resp, err := noRedirect.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	// A bexio link from someone else's consent must not complete in this browser.
+	if resp := callback(false); resp.StatusCode != 400 || resp.Header.Get("Location") != "" {
+		t.Fatalf("callback without the browser's cookie: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	resp = callback(true)
 	back, _ := url.Parse(resp.Header.Get("Location"))
 	code := back.Query().Get("code")
 	if back.Host != "client.example.com" || back.Query().Get("state") != "xyz" || back.Query().Get("iss") != publicURL || code == "" {
