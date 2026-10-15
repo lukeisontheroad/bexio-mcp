@@ -50,7 +50,8 @@ answers 200 for health checks).
 3. Connect, sign in to bexio, and pick the company.
 
 **Choosing scopes:** the connector URL picks what bexio is asked to grant:
-`/mcp/<label>/<modules>/readonly`, both parts optional.
+`/mcp/<label>/<modules>/readonly`. Modules and `readonly` are optional, but
+need a label in front: `/mcp/readonly` is refused, not read as a label.
 
 | URL                                    | Access                                   |
 |----------------------------------------|------------------------------------------|

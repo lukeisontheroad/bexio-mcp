@@ -61,8 +61,11 @@ func TestServer(t *testing.T) {
 		}
 	}
 
-	if resp, _ := http.Post(srv.URL+"/mcp/acme/payroll", "application/json", nil); resp.StatusCode != 404 {
-		t.Fatalf("unknown module answered %d", resp.StatusCode)
+	// Unknown modules and options without a label are refused, not ignored.
+	for _, path := range []string{"/mcp/acme/payroll", "/mcp/readonly", "/mcp/contacts,invoices"} {
+		if resp, _ := http.Post(srv.URL+path, "application/json", nil); resp.StatusCode != 404 {
+			t.Fatalf("%s answered %d", path, resp.StatusCode)
+		}
 	}
 
 	resp, err := http.Get(srv.URL + prmPath + "/mcp/acme")

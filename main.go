@@ -81,6 +81,11 @@ func main() {
 func connectorConfig(path string) (scopes []string, readOnly bool, err error) {
 	picked := map[string]bool{}
 	segments := strings.Split(strings.Trim(strings.TrimPrefix(path, "/mcp"), "/"), "/")
+	// Without a label, /mcp/readonly would read "readonly" as the label and
+	// grant full access.
+	if label := segments[0]; label == "readonly" || slices.ContainsFunc(strings.Split(label, ","), func(m string) bool { return modules[m] != "" }) {
+		return nil, false, fmt.Errorf("start with a connector label, e.g. /mcp/acme/%s", strings.Join(segments, "/"))
+	}
 	for _, segment := range segments[1:] {
 		if segment == "readonly" {
 			readOnly = true
@@ -236,7 +241,7 @@ func (a *api) caller(readOnly bool) mcp.ToolHandlerFor[callInput, any] {
 			return nil, nil, fmt.Errorf("unknown operation %q: look it up with bexio_docs", in.Operation)
 		}
 		if readOnly && !op.readOnly() {
-			return nil, nil, fmt.Errorf("%s changes data: use bexio_write", op.ID)
+			return nil, nil, fmt.Errorf("%s changes data: it needs bexio_write, which read-only connectors don't have", op.ID)
 		}
 		text, err := call(ctx, req.Extra.Header.Get("Authorization"), op, in)
 		return textResult(text), nil, err
