@@ -9,6 +9,9 @@ services:
     restart: unless-stopped
     environment:
       PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL in .env}
+      # Go's own soft limit; also holds where the kernel ignores mem_limit
+      # (Raspberry Pi OS boots with cgroup_disable=memory).
+      GOMEMLIMIT: 100MiB
     # Loopback only: the tunnel or reverse proxy is the sole way in.
     ports:
       - "127.0.0.1:${HOST_PORT:-8080}:8080"
