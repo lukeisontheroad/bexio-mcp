@@ -31,8 +31,10 @@ python3 scripts/fetch-spec.py          # regenerate openapi.json
 
 Production: https://mcp.bextrack.com on the Raspberry Pi (`ssh pi`), in
 `~/dockerapps/mcp.bextrack.com` (compose file and `.env`, chmod 600, with
-`PUBLIC_URL`, `BEXIO_CLIENT_ID`, `BEXIO_CLIENT_SECRET`, `HOST_PORT=8011` and
-`IMAGE`; the user maintains the secret there, never write it yourself). The
+`PUBLIC_URL`, `BEXIO_CLIENT_ID`, `BEXIO_CLIENT_SECRET`, `HOST_PORT=8011`,
+`IMAGE`, `SENTRY_DSN` (sentry.io project, platform Go) and
+`SENTRY_ENVIRONMENT=production`; the user maintains the secret there, never
+write it yourself). The
 Pi's Cloudflare tunnel (dashboard-managed) routes the hostname to
 `http://localhost:8011` and terminates TLS. Deploying a release means
 setting `IMAGE` to the new version's tag and
