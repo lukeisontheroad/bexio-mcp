@@ -1,4 +1,4 @@
-// Command bexio-hosted-mcp is a remote MCP server for the bexio API.
+// Command bexio-mcp (BexTrackMCP) is a remote MCP server for the bexio API.
 //
 // It is its own OAuth authorization server towards MCP clients (bexio cannot
 // register them) and signs users in at bexio with one confidential client.
@@ -33,6 +33,9 @@ const (
 	maxResult = 100_000
 )
 
+// version is set at build time (-ldflags "-X main.version=1.2.3").
+var version = "dev"
+
 // apiURL is the bexio API base; tests point it at a fake.
 var apiURL = "https://api.bexio.com"
 
@@ -45,7 +48,7 @@ func main() {
 		log.Fatal("PUBLIC_URL, BEXIO_CLIENT_ID and BEXIO_CLIENT_SECRET are required")
 	}
 	addr := ":" + cmp.Or(os.Getenv("PORT"), "8080")
-	log.Printf("listening on %s, connector URL %s/mcp", addr, publicURL)
+	log.Printf("BexTrackMCP %s listening on %s, connector URL %s/mcp", version, addr, publicURL)
 	srv := &http.Server{
 		Addr: addr, Handler: newHandler(newAuthServer(publicURL, clientID, clientSecret)),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
@@ -125,7 +128,7 @@ func newServer(a *api, readOnly bool) *mcp.Server {
 	} else {
 		instructions += "Writes change real books: confirm with the user before creating, changing, deleting, issuing or sending anything."
 	}
-	s := mcp.NewServer(&mcp.Implementation{Name: "bexio", Version: "0.1.0"}, &mcp.ServerOptions{Instructions: instructions})
+	s := mcp.NewServer(&mcp.Implementation{Name: "BexTrackMCP", Version: version}, &mcp.ServerOptions{Instructions: instructions})
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "bexio_docs",
 		Description: "bexio API reference. Start here: no topic gives conventions and operation groups; a group lists its operations; an operationId shows its parameters and request body.",

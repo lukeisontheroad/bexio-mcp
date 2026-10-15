@@ -1,12 +1,13 @@
-name: bexio-hosted-mcp
+name: bexio-mcp
 
 # .env next to this file (chmod 600): PUBLIC_URL, BEXIO_CLIENT_ID and
-# BEXIO_CLIENT_SECRET (the bexio app this server signs users in with), and
-# HOST_PORT (loopback port the reverse proxy or tunnel forwards to).
+# BEXIO_CLIENT_SECRET (the bexio app this server signs users in with),
+# HOST_PORT (loopback port the reverse proxy or tunnel forwards to), and
+# optionally IMAGE to run a released image (ghcr.io/<owner>/bexio-mcp:<version>).
 services:
   mcp:
     build: .
-    image: bexio-hosted-mcp:latest
+    image: ${IMAGE:-bexio-mcp:latest}
     restart: unless-stopped
     environment:
       PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL in .env}

@@ -243,6 +243,7 @@ func (s *authServer) authorize(w http.ResponseWriter, r *http.Request) {
 		target = u.Scheme + "://" + u.Host
 	}
 	consentPage.Execute(w, map[string]any{
+		"Version":    version,
 		"HeaderLogo": headerLogo,
 		"BadgeLogo":  badgeLogo,
 		"Name":       client.Name,
@@ -492,7 +493,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outl
 </head>
 <body>
 <div class="card">
-<header><img src="{{.HeaderLogo}}" alt="">bextrack<span>MCP</span></header>
+<header><img src="{{.HeaderLogo}}" alt="">BexTrack<span>MCP</span></header>
 <div class="intro">
 <div class="badge"><img src="{{.BadgeLogo}}" alt=""></div>
 <p><strong>{{or .Name "An application"}}</strong> wants to connect to your bexio account.<br>Choose what it may use.</p>
@@ -508,7 +509,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outl
 <div class="actions"><button name="action" value="allow">Continue to bexio</button><button name="action" value="deny">Cancel</button></div>
 </form>
 </div>
-<p class="note">Bank payments and payroll are never available through this connector.</p>
+<p class="note">Bank payments and payroll are never available through this connector.<br>BexTrackMCP {{.Version}}</p>
 </body>
 </html>
 `))

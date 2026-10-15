@@ -1,8 +1,9 @@
-# bexio-hosted-mcp
+# BexTrackMCP (bexio-mcp)
 
 Remote MCP server for the bexio API, run as a Docker container. Standalone
-project with no code shared with other repos. User-facing setup is in
-README.md.
+project with no code shared with other repos. Functionality, security and
+user-facing setup are documented in README.md; keep it current with every
+change.
 
 API reference: https://docs.bexio.com/ (pre-rendered Redoc; the full
 OpenAPI spec is embedded in `__redoc_state`, see `scripts/fetch-spec.py`).
@@ -10,27 +11,32 @@ OpenAPI spec is embedded in `__redoc_state`, see `scripts/fetch-spec.py`).
 ## Commands
 
 ```sh
-go test ./...                          # includes an end-to-end MCP client test
-docker build -t bexio-hosted-mcp .
+go test ./...                          # includes end-to-end sign-in and MCP tests
+docker build -t bexio-mcp .
 python3 scripts/fetch-spec.py          # regenerate openapi.json
 ```
 
+## Branches, commits, releases
+
+- Work on a branch off `dev`, merge into `dev` by pull request. `main` only
+  receives pull requests from `dev`. Both are protected (PR + green CI, no
+  force push); never push to them directly.
+- Conventional Commits are enforced in CI and drive the version
+  (release-please, `bump-minor-pre-major`). Never tag manually.
+- Merging release-please's PR on `main` tags `vX.Y.Z` and the `release`
+  workflow publishes `ghcr.io/<owner>/bexio-mcp:{X.Y.Z,X.Y,latest}` for
+  amd64 and arm64, with the version baked in (`-X main.version`).
+
 ## Deploy
 
-Production: https://mcp.bextrack.com on the Raspberry Pi
-(`ssh pi`), in `~/dockerapps/mcp.bextrack.com` (compose file,
-`.env`, chmod 600, with `PUBLIC_URL`, `BEXIO_CLIENT_ID`,
-`BEXIO_CLIENT_SECRET` and `HOST_PORT=8011`; the user maintains the secret
-there, never write it yourself). The Pi's Cloudflare tunnel
-(dashboard-managed) routes the hostname to `http://localhost:8011` and
-terminates TLS. The Pi never builds; ship the image as a tar:
-
-```sh
-docker buildx build --platform linux/arm64 -t bexio-hosted-mcp:latest --load .
-docker save bexio-hosted-mcp:latest -o bexio-hosted-mcp.tar
-scp bexio-hosted-mcp.tar docker-compose.yml pi:dockerapps/mcp.bextrack.com/
-ssh pi 'cd ~/dockerapps/mcp.bextrack.com && docker load -i bexio-hosted-mcp.tar && docker compose up -d'
-```
+Production: https://mcp.bextrack.com on the Raspberry Pi (`ssh pi`), in
+`~/dockerapps/mcp.bextrack.com` (compose file and `.env`, chmod 600, with
+`PUBLIC_URL`, `BEXIO_CLIENT_ID`, `BEXIO_CLIENT_SECRET`, `HOST_PORT=8011` and
+`IMAGE`; the user maintains the secret there, never write it yourself). The
+Pi's Cloudflare tunnel (dashboard-managed) routes the hostname to
+`http://localhost:8011` and terminates TLS. Deploying a release means
+setting `IMAGE` to the new version's tag and
+`docker compose pull && docker compose up -d`. Deploys need the user's go.
 
 ## Layout
 
@@ -44,15 +50,16 @@ ssh pi 'cd ~/dockerapps/mcp.bextrack.com && docker load -i bexio-hosted-mcp.tar 
   model mistakes here.
 - `openapi.json`: generated, never hand-edited.
 - `bextrack-logo.svg`: the bextrack app icon, shown on the consent page.
-- Files embedded with `go:embed` must also be in the Dockerfile's explicit
-  `COPY` line, or the image build fails.
+- Files embedded with `go:embed` must be in the Dockerfile's `COPY` line
+  and allowed in `.dockerignore` (an allowlist), or the image build fails.
 
 ## Rules
 
 - Stateless: never store, log or cache tokens, codes or sealed values. Log
   paths only, never full URLs or bodies (`/oauth/*` queries carry codes).
 - The bexio client secret stays on the server; clients only ever get sealed
-  values. bexio's tokens are unwrapped solely to call api.bexio.com.
+  values. bexio's tokens are unwrapped solely to call api.bexio.com. The
+  seal key derivation string must not change: it would sign everyone out.
 - Every authorization goes through the consent page with its CSRF cookie:
   with open registration, skipping it lets anyone phish a signed-in user's
   bexio access. Redirect URIs are validated before anything redirects.
@@ -65,4 +72,4 @@ ssh pi 'cd ~/dockerapps/mcp.bextrack.com && docker load -i bexio-hosted-mcp.tar 
   connectors (`/mcp/<label>`, the label is free text); there is no company
   parameter.
 - Use `example.com`/Acme placeholders in docs and tests, never real company
-  names.
+  names or personal domains.

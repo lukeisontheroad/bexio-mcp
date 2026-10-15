@@ -1,0 +1,9 @@
+# Allowlist: only the files the build needs reach the build context, so
+# secrets (.env) or stray files can never end up in an image.
+*
+!go.mod
+!go.sum
+!*.go
+!openapi.json
+!guide.md
+!bextrack-logo.svg

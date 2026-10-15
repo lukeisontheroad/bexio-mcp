@@ -1,4 +1,11 @@
+# build output
 /bexio-mcp
-/bexio-hosted-mcp
 *.tar
+coverage.out
+# secrets
 .env
+.env.*
+# OS and editor clutter
+.DS_Store
+.idea/
+.vscode/
