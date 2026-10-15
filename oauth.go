@@ -181,10 +181,10 @@ func (s *authServer) register(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// redirectAllowed accepts https, http on loopback (native apps, RFC 8252),
-// the editors' own schemes and reverse-domain private-use schemes
-// (com.example.app:/cb). Other schemes can launch arbitrary OS handlers, and
-// non-ASCII hosts could pass for another host on the consent page.
+// redirectAllowed accepts https, http on loopback (native apps, RFC 8252)
+// and the editors' own schemes. Any other scheme can launch an arbitrary OS
+// handler, and non-ASCII hosts could pass for another host on the consent
+// page.
 func redirectAllowed(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil || len(raw) > 2000 || u.Fragment != "" || strings.ContainsFunc(u.Host, func(r rune) bool { return r > unicode.MaxASCII }) {
@@ -198,7 +198,7 @@ func redirectAllowed(raw string) bool {
 	case "cursor", "vscode", "vscode-insiders":
 		return true
 	}
-	return strings.Contains(u.Scheme, ".")
+	return false
 }
 
 func isLoopback(host string) bool { return host == "localhost" || host == "127.0.0.1" || host == "::1" }
@@ -221,7 +221,7 @@ func (s *authServer) authorize(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	client, ok := s.open(q.Get("client_id"), "client")
 	redirect, challenge := q.Get("redirect_uri"), q.Get("code_challenge")
-	if !ok || !redirectRegistered(client.URIs, redirect) || q.Get("response_type") != "code" ||
+	if !ok || !redirectAllowed(redirect) || !redirectRegistered(client.URIs, redirect) || q.Get("response_type") != "code" ||
 		q.Get("code_challenge_method") != "S256" || len(challenge) != 43 || len(q.Get("state")) > 512 {
 		http.Error(w, "Invalid sign-in request. Remove the connector and add it again.", http.StatusBadRequest)
 		return
@@ -258,13 +258,14 @@ func (s *authServer) authorize(w http.ResponseWriter, r *http.Request) {
 func (s *authServer) consent(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	req, ok := s.open(r.PostFormValue("request"), "consent")
-	if _, err := r.Cookie("flow_" + req.Nonce); !ok || err != nil {
+	if _, err := r.Cookie(s.flowCookie(req.Nonce, 0).Name); !ok || err != nil {
 		http.Error(w, "This sign-in expired or was not started in this browser. Start it again from your app.", http.StatusForbidden)
 		return
 	}
 	if r.PostFormValue("action") != "allow" {
+		// No redirect: Cancel must not send anyone to a stranger's URI.
 		http.SetCookie(w, s.flowCookie(req.Nonce, -1))
-		s.redirectClient(w, r, req.Redirect, url.Values{"error": {"access_denied"}, "state": {req.State}})
+		http.Error(w, "Cancelled. You can close this window.", http.StatusOK)
 		return
 	}
 	picked := r.PostForm["module"]
@@ -274,6 +275,7 @@ func (s *authServer) consent(w http.ResponseWriter, r *http.Request) {
 	}
 	readOnly := r.PostFormValue("readonly") != ""
 	verifier := randomString()
+	http.SetCookie(w, s.flowCookie(req.Nonce, 600)) // the bexio login may take a while
 	state := s.seal(sealed{
 		Kind: "state", Exp: time.Now().Add(10 * time.Minute).Unix(), Client: req.Client, Redirect: req.Redirect,
 		State: req.State, Challenge: req.Challenge, Verifier: verifier, Nonce: req.Nonce, ReadOnly: readOnly,
@@ -295,17 +297,17 @@ func (s *authServer) consent(w http.ResponseWriter, r *http.Request) {
 func (s *authServer) callback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	st, ok := s.open(q.Get("state"), "state")
-	if _, err := r.Cookie("flow_" + st.Nonce); !ok || err != nil {
+	if _, err := r.Cookie(s.flowCookie(st.Nonce, 0).Name); !ok || err != nil {
 		http.Error(w, "This sign-in expired or was not started in this browser. Start it again from your app.", http.StatusBadRequest)
 		return
 	}
 	http.SetCookie(w, s.flowCookie(st.Nonce, -1))
 	if q.Get("code") == "" {
 		e := q.Get("error")
-		log.Printf("callback: bexio error %q", e)
 		if !slices.Contains([]string{"invalid_request", "unauthorized_client", "invalid_scope", "server_error", "temporarily_unavailable"}, e) {
 			e = "access_denied"
 		}
+		log.Printf("callback: bexio error %s", e)
 		s.redirectClient(w, r, st.Redirect, url.Values{"error": {e}, "state": {st.State}})
 		return
 	}
@@ -316,9 +318,15 @@ func (s *authServer) callback(w http.ResponseWriter, r *http.Request) {
 	s.redirectClient(w, r, st.Redirect, url.Values{"code": {code}, "state": {st.State}})
 }
 
+// flowCookie marks one sign-in in progress in this browser. On https it is a
+// __Host- cookie, so sibling subdomains cannot plant one in a victim's
+// browser to complete an attacker's sign-in there.
 func (s *authServer) flowCookie(nonce string, maxAge int) *http.Cookie {
-	return &http.Cookie{Name: "flow_" + nonce, Value: "1", Path: "/oauth", MaxAge: maxAge, HttpOnly: true,
-		Secure: strings.HasPrefix(s.publicURL, "https:"), SameSite: http.SameSiteLaxMode}
+	c := &http.Cookie{Name: "flow_" + nonce, Value: "1", Path: "/", MaxAge: maxAge, HttpOnly: true, SameSite: http.SameSiteLaxMode}
+	if strings.HasPrefix(s.publicURL, "https:") {
+		c.Name, c.Secure = "__Host-"+c.Name, true
+	}
+	return c
 }
 
 func (s *authServer) redirectClient(w http.ResponseWriter, r *http.Request, redirect string, params url.Values) {
