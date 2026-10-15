@@ -30,14 +30,14 @@ docker run -p 8080:8080 -e PUBLIC_URL=https://bexio-mcp.example.com bexio-hosted
 Put it behind TLS on a public URL. claude.ai connects from Anthropic's
 cloud (`160.79.104.0/21`), not from your machine.
 
-| Variable       | Default        | Meaning                                                     |
-|----------------|----------------|-------------------------------------------------------------|
-| `PUBLIC_URL`   | required       | External base URL, used in the OAuth metadata               |
-| `PORT`         | `8080`         | Listen port                                                 |
-| `BEXIO_SCOPES` | all but payroll/banking | Space-separated OAuth scopes requested at sign-in. One unknown scope makes bexio reject the whole sign-in. |
+| Variable     | Default  | Meaning                                       |
+|--------------|----------|-----------------------------------------------|
+| `PUBLIC_URL` | required | External base URL, used in the OAuth metadata |
+| `PORT`       | `8080`   | Listen port                                   |
 
-Endpoints: `/mcp` and `/mcp/<label>` (MCP), `/.well-known/oauth-protected-resource[/mcp...]`,
-`/healthz`.
+Endpoints: `/mcp` and `/mcp/<label>` (MCP), and
+`/.well-known/oauth-protected-resource[/mcp...]` (OAuth metadata; also
+answers 200 for health checks).
 
 ## Connect Claude
 

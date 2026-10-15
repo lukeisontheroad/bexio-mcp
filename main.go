@@ -52,10 +52,9 @@ func main() {
 	if publicURL == "" {
 		log.Fatal("PUBLIC_URL is required, e.g. https://bexio-mcp.example.com")
 	}
-	scopes := strings.Fields(cmp.Or(os.Getenv("BEXIO_SCOPES"), defaultScopes))
 	addr := ":" + cmp.Or(os.Getenv("PORT"), "8080")
 	log.Printf("listening on %s, connector URL %s/mcp", addr, publicURL)
-	log.Fatal(http.ListenAndServe(addr, newHandler(publicURL, scopes)))
+	log.Fatal(http.ListenAndServe(addr, newHandler(publicURL, strings.Fields(defaultScopes))))
 }
 
 func newHandler(publicURL string, scopes []string) http.Handler {
@@ -83,9 +82,7 @@ func newHandler(publicURL string, scopes []string) http.Handler {
 	mux.Handle("/mcp", mcpHandler)
 	mux.Handle("/mcp/", mcpHandler)
 	mux.HandleFunc("GET "+prmPath, metadata)
-	mux.HandleFunc("GET "+prmPath+"/mcp", metadata)
-	mux.HandleFunc("GET "+prmPath+"/mcp/", metadata)
-	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
+	mux.HandleFunc("GET "+prmPath+"/", metadata)
 	return mux
 }
 
@@ -191,10 +188,7 @@ func call(ctx context.Context, authorization string, op *operation, in callInput
 	}
 	var body io.Reader
 	if in.Body != nil {
-		b, err := json.Marshal(in.Body)
-		if err != nil {
-			return "", err
-		}
+		b, _ := json.Marshal(in.Body) // decoded from JSON, so it re-encodes
 		body = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, op.Method, apiURL+path+"?"+query.Encode(), body)

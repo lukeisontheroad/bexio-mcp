@@ -250,5 +250,5 @@ func flag(ok bool, s string) string {
 }
 
 func obj(v any) map[string]any { m, _ := v.(map[string]any); return m }
-func list(v any) []any          { l, _ := v.([]any); return l }
-func str(v any) string          { s, _ := v.(string); return s }
+func list(v any) []any         { l, _ := v.([]any); return l }
+func str(v any) string         { s, _ := v.(string); return s }
