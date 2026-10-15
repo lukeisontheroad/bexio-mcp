@@ -1,1 +1,4 @@
+/bexio-mcp
 /bexio-hosted-mcp
+*.tar
+.env
