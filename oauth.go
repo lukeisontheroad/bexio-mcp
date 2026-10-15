@@ -434,6 +434,9 @@ func oauthError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, map[string]string{"error": code})
 }
 
+// consentPage follows the look of bexio's own sign-in pages (light card,
+// dark header, round badge, list rows) without bexio's logo: a lookalike of
+// the real login would teach users to trust lookalikes.
 var consentPage = template.Must(template.New("consent").Parse(`<!doctype html>
 <html lang="en">
 <head>
@@ -441,37 +444,53 @@ var consentPage = template.Must(template.New("consent").Parse(`<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connect bexio</title>
 <style>
-:root { color-scheme: light dark; --bg: #fff; --fg: #1a1a1a; --muted: #555; --line: #d0d0d0; --warn: #fff4e0; --accent: #0b6e4f; }
-@media (prefers-color-scheme: dark) { :root { --bg: #161616; --fg: #ececec; --muted: #a8a8a8; --line: #3a3a3a; --warn: #3a2c12; --accent: #3fb68b; } }
-body { margin: 0; padding: 2rem 16px; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
-main { max-width: 32rem; margin: 0 auto; }
-h1 { font-size: 1.4rem; margin: 0 0 1rem; }
-.host { font-family: ui-monospace, monospace; word-break: break-all; }
-.warn { background: var(--warn); padding: .75rem 1rem; border-radius: 8px; }
-fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 1rem 0; padding: .5rem 1rem; }
-label { display: flex; gap: .5rem; padding: .3rem 0; }
-.buttons { display: flex; gap: .75rem; margin-top: 1.25rem; }
-button { font: inherit; padding: .6rem 1.1rem; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--fg); cursor: pointer; }
-button[value=allow] { background: var(--accent); border-color: var(--accent); color: #fff; }
-.note { color: var(--muted); font-size: .9rem; }
+:root { color-scheme: light; --page: #f4f4f4; --card: #fff; --head: #0d2e3a; --head-fg: #c5d0d3; --intro: #ebebea;
+  --teal: #0e4b5c; --teal-dark: #0a3744; --lime: #c8dc28; --fg: #1f1f1f; --muted: #6b6b6b; --line: #e6e6e6; --warn: #fff4d6; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px 16px 32px; background: var(--page); color: var(--fg); font: 15px/1.45 Lato, "Helvetica Neue", Arial, sans-serif; }
+.card { max-width: 480px; margin: 0 auto; background: var(--card); border-radius: 3px; box-shadow: 0 1px 4px rgba(0,0,0,.18); overflow: hidden; }
+header { background: var(--head); color: var(--head-fg); text-align: center; font-size: 22px; letter-spacing: .5px; padding: 10px 0 12px; }
+header span { font-size: 14px; letter-spacing: 1px; margin-left: 4px; }
+.intro { background: var(--intro); text-align: center; padding: 32px 24px 24px; }
+.badge { width: 104px; height: 104px; margin: 0 auto 24px; border-radius: 50%; background: var(--teal); color: var(--lime);
+  display: flex; align-items: center; justify-content: center; font-size: 30px; font-weight: 700; letter-spacing: 1px; }
+.intro p { margin: 0 0 8px; }
+.target { color: var(--muted); font-size: 13px; }
+.target span { font-family: ui-monospace, Menlo, monospace; color: var(--fg); word-break: break-all; }
+.warn { background: var(--warn); border-radius: 3px; padding: 8px 12px; margin-top: 12px; font-size: 13px; }
+.section { padding: 14px 24px 6px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+label.row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 24px; border-top: 1px solid var(--line); cursor: pointer; }
+label.row:hover { background: #fafafa; }
+label.row small { display: block; color: var(--muted); font-size: 13px; }
+input[type=checkbox] { width: 18px; height: 18px; flex: none; accent-color: var(--teal); }
+.actions { display: flex; flex-direction: row-reverse; align-items: center; gap: 8px; padding: 18px 24px; border-top: 1px solid var(--line); }
+button { font: inherit; border: 0; border-radius: 3px; padding: 10px 18px; cursor: pointer; }
+button[value=allow] { background: var(--teal); color: #fff; font-weight: 700; }
+button[value=allow]:hover { background: var(--teal-dark); }
+button[value=deny] { background: transparent; color: var(--muted); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.note { max-width: 480px; margin: 12px auto 0; text-align: center; color: var(--muted); font-size: 12px; }
 </style>
 </head>
 <body>
-<main>
-<h1>Connect bexio</h1>
-<p><strong>{{or .Name "An application"}}</strong> wants to use your bexio account. After you sign in at bexio you will be sent back to <span class="host">{{.Target}}</span>.</p>
+<div class="card">
+<header>bexio<span>MCP</span></header>
+<div class="intro">
+<div class="badge" aria-hidden="true">MCP</div>
+<p><strong>{{or .Name "An application"}}</strong> wants to connect to your bexio account.<br>Choose what it may use.</p>
+<p class="target">Afterwards you will be sent back to <span>{{.Target}}</span></p>
 {{if .Local}}<p class="warn">That address opens a program on your own computer. Only continue if you just started this sign-in yourself.</p>{{end}}
+</div>
 <form method="post">
 <input type="hidden" name="request" value="{{.Request}}">
-<fieldset>
-<legend>Areas it may use</legend>
-{{range .Modules}}<label><input type="checkbox" name="module" value="{{.Name}}" checked> {{.Label}}</label>
-{{end}}</fieldset>
-<label><input type="checkbox" name="readonly" value="1"> Read only: it can look things up but never change anything</label>
-<div class="buttons"><button name="action" value="allow">Continue to bexio</button><button name="action" value="deny">Cancel</button></div>
+<div class="section">Areas</div>
+{{range .Modules}}<label class="row">{{.Label}}<input type="checkbox" name="module" value="{{.Name}}" checked></label>
+{{end}}<div class="section">Access</div>
+<label class="row"><span>Read only<small>Can look things up, never changes anything</small></span><input type="checkbox" name="readonly" value="1"></label>
+<div class="actions"><button name="action" value="allow">Continue to bexio</button><button name="action" value="deny">Cancel</button></div>
 </form>
+</div>
 <p class="note">Bank payments and payroll are never available through this connector.</p>
-</main>
 </body>
 </html>
 `))
