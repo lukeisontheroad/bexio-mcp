@@ -61,8 +61,8 @@ func TestServer(t *testing.T) {
 		}
 	}
 
-	// Unknown modules and options without a label are refused, not ignored.
-	for _, path := range []string{"/mcp/acme/payroll", "/mcp/readonly", "/mcp/contacts,invoices"} {
+	// Unknown modules are refused, not ignored.
+	for _, path := range []string{"/mcp/acme/payroll", "/mcp/contacts,payroll"} {
 		if resp, _ := http.Post(srv.URL+path, "application/json", nil); resp.StatusCode != 404 {
 			t.Fatalf("%s answered %d", path, resp.StatusCode)
 		}
@@ -129,7 +129,8 @@ func TestServer(t *testing.T) {
 		t.Fatalf("index: %s", text(res))
 	}
 
-	tools, err := connect("/mcp/acme/readonly").ListTools(context.Background(), nil)
+	// Options work without a label too.
+	tools, err := connect("/mcp/readonly").ListTools(context.Background(), nil)
 	if err != nil || len(tools.Tools) != 2 || slices.ContainsFunc(tools.Tools, func(t *mcp.Tool) bool { return t.Name == "bexio_write" }) {
 		t.Fatalf("read-only connector tools: %v %v", tools, err)
 	}

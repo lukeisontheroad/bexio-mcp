@@ -50,15 +50,17 @@ answers 200 for health checks).
 3. Connect, sign in to bexio, and pick the company.
 
 **Choosing scopes:** the connector URL picks what bexio is asked to grant:
-`/mcp/<label>/<modules>/readonly`. Modules and `readonly` are optional, but
-need a label in front: `/mcp/readonly` is refused, not read as a label.
+`/mcp[/<label>][/<modules>][/readonly]`, every part optional. The label
+is any name (it only makes each connector's URL unique); a first segment
+that is `readonly` or a module list counts as an option, not a label.
 
 | URL                                    | Access                                   |
 |----------------------------------------|------------------------------------------|
+| `/mcp`                                 | all modules, read and write              |
+| `/mcp/readonly`                        | all modules, read only                   |
 | `/mcp/acme`                            | all modules, read and write              |
-| `/mcp/acme/readonly`                   | all modules, read only                   |
 | `/mcp/acme/contacts,invoices`          | contacts and invoices, read and write    |
-| `/mcp/acme/accounting/readonly`        | accounting, read only                    |
+| `/mcp/accounting/readonly`             | accounting, read only                    |
 
 Modules: `contacts`, `quotes`, `orders`, `invoices`, `items`, `projects`,
 `notes-tasks`, `master-data`, `files`, `accounting`, `purchase`. `readonly`

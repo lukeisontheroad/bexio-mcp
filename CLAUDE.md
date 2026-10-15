@@ -47,7 +47,7 @@ ssh pi 'cd ~/dockerapps/mcp.bextrack.com && docker load -i bexio-hosted-mcp.tar 
 - Bank payments and payroll stay excluded (`servable` in spec.go, absent
   from `modules`): a chat connector must not move money or read salary data.
 - `modules` (main.go) maps URL modules to OAuth scopes; the connector URL
-  `/mcp/<label>/<modules>/readonly` selects them (`connectorConfig`). One
+  `/mcp[/<label>][/<modules>][/readonly]` selects them (`connectorConfig`). One
   scope bexio doesn't know makes it reject the whole sign-in (e.g.
   `general` is documented but not requestable). Add only verified names.
 - bexio tokens are bound to one company. Several companies means several

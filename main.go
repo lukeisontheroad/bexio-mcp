@@ -79,27 +79,24 @@ func main() {
 }
 
 // connectorConfig reads the options in a connector URL,
-// /mcp/<label>/<module,module,...>/readonly: the label only names the
-// connector, no modules means all, and readonly drops every write scope
-// and the bexio_write tool.
+// /mcp[/<label>][/<module,module,...>][/readonly]: the optional label only
+// names the connector, no modules means all, and readonly drops every write
+// scope and the bexio_write tool. A first segment that reads as an option
+// is one, so /mcp/readonly is read-only, not a connector named "readonly".
 func connectorConfig(path string) (scopes []string, readOnly bool, err error) {
 	picked := map[string]bool{}
 	segments := strings.Split(strings.Trim(strings.TrimPrefix(path, "/mcp"), "/"), "/")
-	// Without a label, /mcp/readonly would read "readonly" as the label and
-	// grant full access.
-	if label := segments[0]; label == "readonly" || slices.ContainsFunc(strings.Split(label, ","), func(m string) bool { return modules[m] != "" }) {
-		return nil, false, fmt.Errorf("start with a connector label, e.g. /mcp/acme/%s", strings.Join(segments, "/"))
-	}
-	for _, segment := range segments[1:] {
-		if segment == "readonly" {
+	for i, segment := range segments {
+		names := strings.Split(segment, ",")
+		switch {
+		case segment == "readonly":
 			readOnly = true
-			continue
-		}
-		for _, m := range strings.Split(segment, ",") {
-			if modules[m] == "" {
-				return nil, false, fmt.Errorf("unknown module %q, known: %s", m, strings.Join(slices.Sorted(maps.Keys(modules)), ", "))
+		case !slices.ContainsFunc(names, func(m string) bool { return modules[m] == "" }):
+			for _, m := range names {
+				picked[m] = true
 			}
-			picked[m] = true
+		case i > 0 || len(names) > 1: // a comma list is never a label
+			return nil, false, fmt.Errorf("unknown module in %q, known: %s", segment, strings.Join(slices.Sorted(maps.Keys(modules)), ", "))
 		}
 	}
 	scopes = strings.Fields(baseScopes)
