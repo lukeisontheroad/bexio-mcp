@@ -1,7 +1,8 @@
 name: bexio-hosted-mcp
 
-# .env next to this file: PUBLIC_URL (required) and HOST_PORT (loopback port
-# the reverse proxy or tunnel forwards to).
+# .env next to this file (chmod 600): PUBLIC_URL, BEXIO_CLIENT_ID and
+# BEXIO_CLIENT_SECRET (the bexio app this server signs users in with), and
+# HOST_PORT (loopback port the reverse proxy or tunnel forwards to).
 services:
   mcp:
     build: .
@@ -9,6 +10,8 @@ services:
     restart: unless-stopped
     environment:
       PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL in .env}
+      BEXIO_CLIENT_ID: ${BEXIO_CLIENT_ID:?set BEXIO_CLIENT_ID in .env}
+      BEXIO_CLIENT_SECRET: ${BEXIO_CLIENT_SECRET:?set BEXIO_CLIENT_SECRET in .env}
       # Go's own soft limit; also holds where the kernel ignores mem_limit
       # (Raspberry Pi OS boots with cgroup_disable=memory).
       GOMEMLIMIT: 100MiB

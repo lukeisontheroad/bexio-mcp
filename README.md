@@ -1,20 +1,26 @@
 # bexio-hosted-mcp
 
-Remote MCP server (Streamable HTTP) that gives Claude (claude.ai, Desktop,
-mobile) access to the [bexio API](https://docs.bexio.com/).
+Remote MCP server (Streamable HTTP) that gives MCP clients (claude.ai,
+Claude Desktop/Code, ChatGPT, Cursor, VS Code, ...) access to the
+[bexio API](https://docs.bexio.com/).
 
-- **Stateless, no stored credentials.** claude.ai signs the user in at
-  bexio's own OAuth server (`auth.bexio.com`) and sends the bexio access
-  token with every request; the server forwards it to `api.bexio.com`.
-  Claude handles token refresh.
-- **Multi-tenant.** Every request carries its own token, so one deployment
-  serves any number of users and bexio companies at the same time.
+- **Just the URL.** The server is its own OAuth authorization server: clients
+  register themselves automatically (dynamic client registration), so nobody
+  enters a client ID or secret. It signs users in at bexio with one bexio
+  app whose secret stays on the server.
+- **Consent page.** Before the bexio login, the user sees which client asks
+  for access and picks the areas it may use (contacts, invoices, accounting,
+  ...) and whether it is read only.
+- **Stateless and multi-tenant.** Nothing is stored. Client IDs, codes and
+  tokens are encrypted with a key derived from the bexio client secret, and
+  every request carries its own token, so one deployment serves any number
+  of users and bexio companies.
 - **Three tools instead of 300.** The bexio OpenAPI spec is embedded and
   served on demand:
   - `bexio_docs`: API conventions, operation groups, and per-operation
     parameters and body
   - `bexio_read`: runs GET and search operations by operationId
-  - `bexio_write`: runs everything else
+  - `bexio_write`: runs everything else (absent on read-only connections)
 - **Excluded:** bank payments and payroll (never callable, scopes never
   requested), PDF/file downloads and multipart uploads.
 
@@ -24,69 +30,40 @@ API reference: https://docs.bexio.com/
 
 ```sh
 docker build -t bexio-hosted-mcp .
-docker run -p 8080:8080 -e PUBLIC_URL=https://bexio-mcp.example.com bexio-hosted-mcp
+docker run -p 8080:8080 -e PUBLIC_URL=https://bexio-mcp.example.com \
+  -e BEXIO_CLIENT_ID=... -e BEXIO_CLIENT_SECRET=... bexio-hosted-mcp
 ```
 
-Put it behind TLS on a public URL. claude.ai connects from Anthropic's
-cloud (`160.79.104.0/21`), not from your machine.
+or `docker compose up -d` with a `.env` (chmod 600) holding the same
+variables. Put it behind TLS on a public URL.
 
-| Variable     | Default  | Meaning                                       |
-|--------------|----------|-----------------------------------------------|
-| `PUBLIC_URL` | required | External base URL, used in the OAuth metadata |
-| `PORT`       | `8080`   | Listen port                                   |
+| Variable              | Meaning                                                  |
+|-----------------------|----------------------------------------------------------|
+| `PUBLIC_URL`          | External base URL; the OAuth issuer and resource         |
+| `BEXIO_CLIENT_ID`     | Client ID of the bexio app on developer.bexio.com        |
+| `BEXIO_CLIENT_SECRET` | Its secret. Rotating it signs every user out             |
+| `PORT`                | Listen port, default `8080`                              |
 
-Endpoints: `/mcp` and `/mcp/<label>` (MCP), and
-`/.well-known/oauth-protected-resource[/mcp...]` (OAuth metadata; also
-answers 200 for health checks).
+The bexio app needs exactly one redirect URI:
+`https://bexio-mcp.example.com/oauth/callback`.
 
-## Connect Claude
+Endpoints: `/mcp` and `/mcp/<label>` (MCP), `/oauth/*` and
+`/.well-known/oauth-authorization-server` (authorization server),
+`/.well-known/oauth-protected-resource[/mcp...]` (also fine for health
+checks).
 
-1. In your bexio app on [developer.bexio.com](https://developer.bexio.com),
-   add the redirect URI `https://claude.ai/api/mcp/auth_callback`. Note the
-   client ID and secret.
-2. In claude.ai go to **Customize > Connectors > Add custom connector**:
-   - URL: `https://bexio-mcp.example.com/mcp/acme`
-   - **Advanced settings**: OAuth client ID and secret from step 1
-3. Connect, sign in to bexio, and pick the company.
+## Connect a client
 
-**Choosing scopes:** the connector URL picks what bexio is asked to grant:
-`/mcp[/<label>][/<modules>][/readonly]`, every part optional. The label
-is any name (it only makes each connector's URL unique); a first segment
-that is `readonly` or a module list counts as an option, not a label.
+Add `https://bexio-mcp.example.com/mcp` as a remote MCP server; in claude.ai
+choose **Register automatically** under OAuth client. Connecting opens the
+consent page, then the bexio login, where you pick the company.
 
-| URL                                    | Access                                   |
-|----------------------------------------|------------------------------------------|
-| `/mcp`                                 | all modules, read and write              |
-| `/mcp/readonly`                        | all modules, read only                   |
-| `/mcp/acme`                            | all modules, read and write              |
-| `/mcp/acme/contacts,invoices`          | contacts and invoices, read and write    |
-| `/mcp/accounting/readonly`             | accounting, read only                    |
+**Several companies:** add one connector per company with a label of your
+choice (`/mcp/acme`, `/mcp/globex`, ...) and sign each in to a different
+company. The label only makes the URLs unique; the sign-in decides the
+company.
 
-Modules: `contacts`, `quotes`, `orders`, `invoices`, `items`, `projects`,
-`notes-tasks`, `master-data`, `files`, `accounting`, `purchase`. `readonly`
-requests no write scopes and removes the `bexio_write` tool. That matters
-for `files`, `accounting` and stock, where bexio has no separate read
-scope. Bank payments and payroll are never available. After changing a
-connector's modules, reconnect it so bexio issues a token with the new
-scopes.
-
-**Several companies:** add one connector per company, each with its own
-label (`/mcp/acme`, `/mcp/globex`, ...), and sign each one in to a
-different company. All of them can be enabled in the same chat. The label
-is just a name; the token decides the company.
-
-**Other MCP clients** use the same bexio app; register each client's
-redirect URI there too (as of 2026-10):
-
-| Client      | Redirect URI                                                                 |
-|-------------|------------------------------------------------------------------------------|
-| claude.ai / Desktop / mobile | `https://claude.ai/api/mcp/auth_callback`                   |
-| ChatGPT     | shown when creating the app: `https://chatgpt.com/connector/oauth/<id>` (legacy: `https://chatgpt.com/connector_platform_oauth_redirect`) |
-| Claude Code | `http://localhost:<port>/callback`, with `claude mcp add --transport http --client-id <id> --client-secret --callback-port <port> bexio-acme https://bexio-mcp.example.com/mcp/acme` |
-| VS Code     | `https://vscode.dev/redirect` and `http://127.0.0.1:33418/`                  |
-| Cursor      | `cursor://anysphere.cursor-mcp/oauth/callback`                               |
-
-**Safety:** keep `bexio_write` on "Needs approval" in the connector's tool
+**Safety:** keep `bexio_write` on "Needs approval" in the client's tool
 permissions; it can issue and send documents and delete records.
 
 ## Develop

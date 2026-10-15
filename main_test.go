@@ -2,12 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -18,6 +17,41 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 )
 
+const publicURL = "https://mcp.example.com"
+
+// fakeBexio records what reached bexio's token endpoint and API.
+type fakeBexio struct {
+	api     *http.Request
+	apiBody string
+	token   url.Values
+}
+
+func setup(t *testing.T) (*httptest.Server, *authServer, *fakeBexio) {
+	fake := &fakeBexio{}
+	bexio := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/token" {
+			fake.api, fake.apiBody = r, string(body)
+			io.WriteString(w, `[{"id":1}]`)
+			return
+		}
+		fake.token, _ = url.ParseQuery(string(body))
+		if fake.token.Get("client_secret") != "bexio-secret" || fake.token.Has("code") && fake.token.Get("code") != "bexio-code" {
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"error":"invalid_grant"}`)
+			return
+		}
+		io.WriteString(w, `{"access_token":"bexio-access","refresh_token":"bexio-refresh","expires_in":300}`)
+	}))
+	t.Cleanup(bexio.Close)
+	apiURL, bexioTokenURL = bexio.URL, bexio.URL+"/token"
+	auth := newAuthServer(publicURL, "bexio-client", "bexio-secret")
+	srv := httptest.NewServer(newHandler(auth))
+	t.Cleanup(srv.Close)
+	return srv, auth, fake
+}
+
 type bearer string
 
 func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -26,45 +60,46 @@ func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(r)
 }
 
-func jwt(exp time.Time) string {
-	payload := base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"exp":%d}`, exp.Unix()))
-	return "eyJhbGciOiJub25lIn0." + payload + ".sig"
+func connect(t *testing.T, endpoint, token string) *mcp.ClientSession {
+	t.Helper()
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).Connect(context.Background(),
+		&mcp.StreamableClientTransport{Endpoint: endpoint, HTTPClient: &http.Client{Transport: bearer(token)}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { session.Close() })
+	return session
+}
+
+func toolNames(t *testing.T, session *mcp.ClientSession) []string {
+	t.Helper()
+	tools, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, tool := range tools.Tools {
+		names = append(names, tool.Name)
+	}
+	return names
 }
 
 func TestServer(t *testing.T) {
-	var got *http.Request
-	var gotBody string
-	bexio := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		got, gotBody = r, string(body)
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `[{"id":1}]`)
-	}))
-	defer bexio.Close()
-	apiURL = bexio.URL
+	srv, auth, fake := setup(t)
 
-	srv := httptest.NewServer(newHandler("https://mcp.example.com"))
-	defer srv.Close()
-
-	// Missing and expired tokens start the sign-in.
-	for _, token := range []string{"", jwt(time.Now().Add(-time.Minute))} {
-		req, _ := http.NewRequest("POST", srv.URL+"/mcp/acme/contacts/readonly", strings.NewReader("{}"))
+	// Anything but a valid access token of this server starts the sign-in:
+	// nothing, a raw bexio token, an expired token, another sealed kind.
+	expired := auth.seal(sealed{Kind: "access", Exp: time.Now().Add(-time.Minute).Unix(), Token: "bexio-access"})
+	for _, token := range []string{"", "bexio-access", expired, auth.seal(sealed{Kind: "refresh", Token: "bexio-access"})} {
+		req, _ := http.NewRequest("POST", srv.URL+"/mcp/acme", strings.NewReader("{}"))
 		req.Header.Set("Authorization", "Bearer "+token)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := `Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp/acme/contacts/readonly", ` +
-			`scope="openid profile email offline_access company_profile contact_show"`
+		want := `Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp/acme"`
 		if resp.StatusCode != 401 || resp.Header.Get("WWW-Authenticate") != want {
 			t.Fatalf("got %d %q", resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
-		}
-	}
-
-	// Unknown modules are refused, not ignored.
-	for _, path := range []string{"/mcp/acme/payroll", "/mcp/contacts,payroll"} {
-		if resp, _ := http.Post(srv.URL+path, "application/json", nil); resp.StatusCode != 404 {
-			t.Fatalf("%s answered %d", path, resp.StatusCode)
 		}
 	}
 
@@ -74,22 +109,12 @@ func TestServer(t *testing.T) {
 	}
 	var prm oauthex.ProtectedResourceMetadata
 	json.NewDecoder(resp.Body).Decode(&prm)
-	if prm.Resource != "https://mcp.example.com/mcp/acme" || prm.AuthorizationServers[0] != issuer {
+	if prm.Resource != publicURL+"/mcp/acme" || prm.AuthorizationServers[0] != publicURL {
 		t.Fatalf("metadata %+v", prm)
 	}
 
-	token := jwt(time.Now().Add(time.Hour))
-	connect := func(path string) *mcp.ClientSession {
-		t.Helper()
-		session, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).Connect(context.Background(),
-			&mcp.StreamableClientTransport{Endpoint: srv.URL + path, HTTPClient: &http.Client{Transport: bearer(token)}}, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { session.Close() })
-		return session
-	}
-	session := connect("/mcp/acme")
+	token := auth.seal(sealed{Kind: "access", Exp: time.Now().Add(time.Hour).Unix(), Token: "bexio-access"})
+	session := connect(t, srv.URL+"/mcp/acme", token)
 	callTool := func(name string, args map[string]any) *mcp.CallToolResult {
 		t.Helper()
 		res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
@@ -104,17 +129,18 @@ func TestServer(t *testing.T) {
 		"operation": "v2SearchContact", "query": map[string]any{"limit": 2000, "fields[]": []any{"id", "name_1"}},
 		"body": []any{map[string]any{"field": "name_1", "value": "%acme%", "criteria": "like"}},
 	})
+	got := fake.api
 	if res.IsError || text(res) != `[{"id":1}]` {
 		t.Fatalf("search: %v", text(res))
 	}
 	if got.Method != "POST" || got.URL.Path != "/2.0/contact/search" || got.URL.RawQuery != "fields%5B%5D=id&fields%5B%5D=name_1&limit=2000" ||
-		got.Header.Get("Authorization") != "Bearer "+token || !strings.Contains(gotBody, `"%acme%"`) {
-		t.Fatalf("forwarded %s %s body %s auth %q", got.Method, got.URL, gotBody, got.Header.Get("Authorization"))
+		got.Header.Get("Authorization") != "Bearer bexio-access" || !strings.Contains(fake.apiBody, `"%acme%"`) {
+		t.Fatalf("forwarded %s %s body %s auth %q", got.Method, got.URL, fake.apiBody, got.Header.Get("Authorization"))
 	}
 
 	callTool("bexio_read", map[string]any{"operation": "v2ShowContact", "path_params": map[string]any{"contact_id": 1234567}})
-	if got.URL.Path != "/2.0/contact/1234567" {
-		t.Fatalf("path %s", got.URL.Path)
+	if fake.api.URL.Path != "/2.0/contact/1234567" {
+		t.Fatalf("path %s", fake.api.URL.Path)
 	}
 
 	if res := callTool("bexio_read", map[string]any{"operation": "v2ShowContact", "path_params": map[string]any{"contact_id": ".."}}); !res.IsError {
@@ -128,11 +154,139 @@ func TestServer(t *testing.T) {
 	if res := callTool("bexio_docs", map[string]any{}); !strings.Contains(text(res), "Contacts (") || strings.Contains(text(res), "Employees") {
 		t.Fatalf("index: %s", text(res))
 	}
+}
 
-	// Options work without a label too.
-	tools, err := connect("/mcp/readonly").ListTools(context.Background(), nil)
-	if err != nil || len(tools.Tools) != 2 || slices.ContainsFunc(tools.Tools, func(t *mcp.Tool) bool { return t.Name == "bexio_write" }) {
-		t.Fatalf("read-only connector tools: %v %v", tools, err)
+// TestSignIn walks a client through registration, consent, bexio's callback,
+// the code exchange and a refresh, and checks the attacks each step stops.
+func TestSignIn(t *testing.T) {
+	srv, _, fake := setup(t)
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	postJSON := func(path, body string) *http.Response {
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	tokenRequest := func(form url.Values) (int, map[string]any) {
+		resp, err := http.PostForm(srv.URL+"/oauth/token", form)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		json.NewDecoder(resp.Body).Decode(&body)
+		return resp.StatusCode, body
+	}
+
+	var meta struct{ Issuer string }
+	resp, _ := http.Get(srv.URL + "/.well-known/oauth-authorization-server")
+	json.NewDecoder(resp.Body).Decode(&meta)
+	if meta.Issuer != publicURL {
+		t.Fatalf("issuer %q", meta.Issuer)
+	}
+
+	if resp := postJSON("/oauth/register", `{"redirect_uris":["http://evil.example.com/cb"]}`); resp.StatusCode != 400 {
+		t.Fatalf("plain http redirect registered: %d", resp.StatusCode)
+	}
+	resp = postJSON("/oauth/register", `{"redirect_uris":["https://client.example.com/cb","http://127.0.0.1/callback"],"client_name":"Test <b>"}`)
+	var reg struct {
+		ClientID string `json:"client_id"`
+	}
+	json.NewDecoder(resp.Body).Decode(&reg)
+	if resp.StatusCode != 201 || reg.ClientID == "" {
+		t.Fatalf("register: %d", resp.StatusCode)
+	}
+
+	verifier := "client-verifier-0123456789012345678901234567890"
+	authorize := func(redirect string) *http.Response {
+		resp, err := noRedirect.Get(srv.URL + "/oauth/authorize?" + url.Values{
+			"client_id": {reg.ClientID}, "redirect_uri": {redirect}, "response_type": {"code"}, "state": {"xyz"},
+			"code_challenge": {pkceChallenge(verifier)}, "code_challenge_method": {"S256"},
+		}.Encode())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	if resp := authorize("https://evil.example.com/cb"); resp.StatusCode != 400 || resp.Header.Get("Location") != "" {
+		t.Fatalf("unregistered redirect: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if resp := authorize("http://127.0.0.1:53682/callback"); resp.StatusCode != 200 {
+		t.Fatalf("loopback on another port: %d", resp.StatusCode)
+	}
+
+	resp = authorize("https://client.example.com/cb")
+	page, _ := io.ReadAll(resp.Body)
+	request := regexp.MustCompile(`name="request" value="([\w-]+)"`).FindSubmatch(page)
+	cookies := resp.Cookies()
+	if resp.StatusCode != 200 || request == nil || len(cookies) != 1 || strings.Contains(string(page), "<b>") {
+		t.Fatalf("consent page: %d %d cookies\n%s", resp.StatusCode, len(cookies), page)
+	}
+	consent := func(withCookie bool) *http.Response {
+		form := url.Values{"request": {string(request[1])}, "module": {"contacts"}, "readonly": {"1"}, "action": {"allow"}}
+		req, _ := http.NewRequest("POST", srv.URL+"/oauth/authorize", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if withCookie {
+			req.AddCookie(cookies[0])
+		}
+		resp, err := noRedirect.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	if resp := consent(false); resp.StatusCode != 403 {
+		t.Fatalf("consent without the browser's cookie: %d", resp.StatusCode)
+	}
+	resp = consent(true)
+	toBexio, _ := url.Parse(resp.Header.Get("Location"))
+	if q := toBexio.Query(); resp.StatusCode != 303 || q.Get("client_id") != "bexio-client" || q.Get("redirect_uri") != publicURL+"/oauth/callback" ||
+		q.Get("scope") != "openid profile email offline_access company_profile contact_show" {
+		t.Fatalf("redirect to bexio: %d %s", resp.StatusCode, toBexio)
+	}
+
+	resp, _ = noRedirect.Get(srv.URL + "/oauth/callback?" + url.Values{"code": {"bexio-code"}, "state": {toBexio.Query().Get("state")}}.Encode())
+	back, _ := url.Parse(resp.Header.Get("Location"))
+	code := back.Query().Get("code")
+	if back.Host != "client.example.com" || back.Query().Get("state") != "xyz" || back.Query().Get("iss") != publicURL || code == "" {
+		t.Fatalf("redirect to client: %s", back)
+	}
+
+	exchange := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "client_id": {reg.ClientID},
+		"redirect_uri": {"https://client.example.com/cb"}, "code_verifier": {verifier}}
+	for name, change := range map[string][2]string{
+		"wrong verifier":     {"code_verifier", "guess"},
+		"other client":       {"client_id", "someone-else"},
+		"client_id as code":  {"code", reg.ClientID},
+		"different redirect": {"redirect_uri", "https://client.example.com/other"},
+	} {
+		bad := url.Values{}
+		for k, v := range exchange {
+			bad[k] = v
+		}
+		bad.Set(change[0], change[1])
+		if status, body := tokenRequest(bad); status != 400 || body["error"] != "invalid_grant" {
+			t.Fatalf("%s: %d %v", name, status, body)
+		}
+	}
+	status, body := tokenRequest(exchange)
+	if status != 200 || fake.token.Get("code") != "bexio-code" || fake.token.Get("code_verifier") == "" || fake.token.Get("client_secret") != "bexio-secret" {
+		t.Fatalf("exchange: %d %v, bexio got %v", status, body, fake.token)
+	}
+
+	// The issued token is read-only, as consented, and unwraps to bexio's.
+	session := connect(t, srv.URL+"/mcp/acme", body["access_token"].(string))
+	if names := toolNames(t, session); slices.Contains(names, "bexio_write") || len(names) != 2 {
+		t.Fatalf("read-only tools: %v", names)
+	}
+	session.CallTool(context.Background(), &mcp.CallToolParams{Name: "bexio_read", Arguments: map[string]any{"operation": "v3ShowMe"}})
+	if fake.api.Header.Get("Authorization") != "Bearer bexio-access" {
+		t.Fatalf("forwarded %q", fake.api.Header.Get("Authorization"))
+	}
+
+	status, refreshed := tokenRequest(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {body["refresh_token"].(string)}, "client_id": {reg.ClientID}})
+	if status != 200 || fake.token.Get("refresh_token") != "bexio-refresh" || refreshed["access_token"] == nil {
+		t.Fatalf("refresh: %d %v", status, refreshed)
 	}
 }
 

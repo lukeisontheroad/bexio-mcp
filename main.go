@@ -1,25 +1,23 @@
 // Command bexio-hosted-mcp is a remote MCP server for the bexio API.
 //
-// It holds no state and no credentials: claude.ai signs the user in at
-// bexio's own OAuth server and sends the bexio access token with every MCP
-// request, which this server forwards to api.bexio.com.
+// It is its own OAuth authorization server towards MCP clients (bexio cannot
+// register them) and signs users in at bexio with one confidential client.
+// It stores nothing: everything it issues is sealed, and bexio's tokens are
+// only unwrapped to forward a request to api.bexio.com.
 package main
 
 import (
 	"bytes"
 	"cmp"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
-	"maps"
 	"net/http"
 	"net/url"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -29,7 +27,6 @@ import (
 )
 
 const (
-	issuer  = "https://auth.bexio.com/realms/bexio"
 	prmPath = "/.well-known/oauth-protected-resource"
 	// ponytail: hard cap per tool result; a 2000-row list would flood the
 	// chat context. Claude pages with limit/offset when it sees the note.
@@ -41,101 +38,37 @@ var apiURL = "https://api.bexio.com"
 
 var client = &http.Client{Timeout: time.Minute}
 
-// baseScopes are requested by every connector: identity, refresh tokens and
-// the company profile.
-const baseScopes = "openid profile email offline_access company_profile"
-
-// modules group bexio's OAuth scopes; a connector URL can pick a subset.
-// Banking payments and payroll are deliberately absent, so no connector can
-// move money or read salary data. One unknown scope makes bexio reject the
-// whole sign-in: only add verified scope names.
-var modules = map[string]string{
-	"contacts":    "contact_show contact_edit",
-	"quotes":      "kb_offer_show kb_offer_edit kb_order_edit kb_invoice_edit",
-	"orders":      "kb_order_show kb_order_edit kb_invoice_edit kb_delivery_edit",
-	"invoices":    "kb_invoice_show kb_invoice_edit",
-	"items":       "article_show article_edit stock_edit kb_delivery_show kb_delivery_edit",
-	"projects":    "project_show project_edit monitoring_show monitoring_edit",
-	"notes-tasks": "note_show note_edit task_show task_edit",
-	"master-data": "bank_account_show",
-	"files":       "file",
-	"accounting":  "accounting",
-	"purchase":    "contact_show kb_bill_show kb_expense_show kb_article_order_show kb_article_order_edit",
-}
-
 func main() {
 	publicURL := strings.TrimSuffix(os.Getenv("PUBLIC_URL"), "/")
-	if publicURL == "" {
-		log.Fatal("PUBLIC_URL is required, e.g. https://bexio-mcp.example.com")
+	clientID, clientSecret := os.Getenv("BEXIO_CLIENT_ID"), os.Getenv("BEXIO_CLIENT_SECRET")
+	if publicURL == "" || clientID == "" || clientSecret == "" {
+		log.Fatal("PUBLIC_URL, BEXIO_CLIENT_ID and BEXIO_CLIENT_SECRET are required")
 	}
 	addr := ":" + cmp.Or(os.Getenv("PORT"), "8080")
 	log.Printf("listening on %s, connector URL %s/mcp", addr, publicURL)
 	srv := &http.Server{
-		Addr: addr, Handler: newHandler(publicURL),
+		Addr: addr, Handler: newHandler(newAuthServer(publicURL, clientID, clientSecret)),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
 		WriteTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute, // bexio calls time out after 1 minute
 	}
 	log.Fatal(srv.ListenAndServe())
 }
 
-// connectorConfig reads the options in a connector URL,
-// /mcp[/<label>][/<module,module,...>][/readonly]: the optional label only
-// names the connector, no modules means all, and readonly drops every write
-// scope and the bexio_write tool. A first segment that reads as an option
-// is one, so /mcp/readonly is read-only, not a connector named "readonly".
-func connectorConfig(path string) (scopes []string, readOnly bool, err error) {
-	picked := map[string]bool{}
-	segments := strings.Split(strings.Trim(strings.TrimPrefix(path, "/mcp"), "/"), "/")
-	for i, segment := range segments {
-		names := strings.Split(segment, ",")
-		switch {
-		case segment == "readonly":
-			readOnly = true
-		case !slices.ContainsFunc(names, func(m string) bool { return modules[m] == "" }):
-			for _, m := range names {
-				picked[m] = true
-			}
-		case i > 0 || len(names) > 1: // a comma list is never a label
-			return nil, false, fmt.Errorf("unknown module in %q, known: %s", segment, strings.Join(slices.Sorted(maps.Keys(modules)), ", "))
-		}
-	}
-	scopes = strings.Fields(baseScopes)
-	for _, m := range slices.Sorted(maps.Keys(modules)) {
-		if len(picked) > 0 && !picked[m] {
-			continue
-		}
-		for _, s := range strings.Fields(modules[m]) {
-			// stock_edit is the only scope that reads stock, so it stays.
-			if !slices.Contains(scopes, s) && !(readOnly && strings.HasSuffix(s, "_edit") && s != "stock_edit") {
-				scopes = append(scopes, s)
-			}
-		}
-	}
-	return scopes, readOnly, nil
-}
+type readOnlyKey struct{}
 
-func newHandler(publicURL string) http.Handler {
+func newHandler(auth *authServer) http.Handler {
 	a := loadAPI()
 	servers := map[bool]*mcp.Server{false: newServer(a, false), true: newServer(a, true)}
 	mcpHandler := requireBearer(mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		_, readOnly, _ := connectorConfig(r.URL.Path) // validated by requireBearer
-		return servers[readOnly]
-	}, &mcp.StreamableHTTPOptions{Stateless: true}), publicURL)
+		return servers[r.Context().Value(readOnlyKey{}) == true]
+	}, &mcp.StreamableHTTPOptions{Stateless: true}), auth)
 
-	// The token decides the bexio company; the URL only picks scopes, so each
-	// company (or scope set) is its own claude.ai connector.
+	// /mcp/<label> serves the same thing under its own URL, so several
+	// connectors (one per bexio company) can coexist in one client.
 	metadata := func(w http.ResponseWriter, r *http.Request) {
-		path := cmp.Or(strings.TrimPrefix(r.URL.Path, prmPath), "/mcp")
-		scopes, _, err := connectorConfig(path)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(&oauthex.ProtectedResourceMetadata{
-			Resource:               publicURL + path,
-			AuthorizationServers:   []string{issuer},
-			ScopesSupported:        scopes,
+		writeJSON(w, http.StatusOK, &oauthex.ProtectedResourceMetadata{
+			Resource:               auth.publicURL + cmp.Or(strings.TrimPrefix(r.URL.Path, prmPath), "/mcp"),
+			AuthorizationServers:   []string{auth.publicURL},
 			BearerMethodsSupported: []string{"header"},
 			ResourceName:           "bexio",
 			ResourceDocumentation:  "https://docs.bexio.com/",
@@ -147,54 +80,30 @@ func newHandler(publicURL string) http.Handler {
 	mux.Handle("/mcp/", mcpHandler)
 	mux.HandleFunc("GET "+prmPath, metadata)
 	mux.HandleFunc("GET "+prmPath+"/", metadata)
+	auth.routes(mux)
 	return mux
 }
 
-// requireBearer answers requests without a usable token with the 401 that
-// starts claude.ai's sign-in: it points at the protected resource metadata,
-// which names bexio as the authorization server, and asks for the scopes the
-// connector URL selects.
-func requireBearer(next http.Handler, publicURL string) http.Handler {
+// requireBearer unwraps the server's own access token into the bexio token
+// it carries. Without a valid one it answers the 401 that starts the
+// client's sign-in, pointing at the protected resource metadata.
+func requireBearer(next http.Handler, auth *authServer) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		scopes, _, err := connectorConfig(r.URL.Path)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		// Access log without tokens or bodies: enough to trace a client's sign-in.
-		authorization := r.Header.Get("Authorization")
-		if !tokenUsable(authorization) {
-			log.Printf("%s %s 401 (bearer sent: %t) %q", r.Method, r.URL.Path, authorization != "", r.UserAgent())
-			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata=%q, scope=%q`,
-				publicURL+prmPath+r.URL.Path, strings.Join(scopes, " ")))
+		// Access log with paths only: queries and bodies carry codes and tokens.
+		scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+		access, ok := auth.open(token, "access")
+		if !ok || !strings.EqualFold(scheme, "Bearer") {
+			log.Printf("%s %s 401 (bearer sent: %t) %q", r.Method, r.URL.Path, token != "", r.UserAgent())
+			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata=%q`, auth.publicURL+prmPath+r.URL.Path))
 			http.Error(w, "sign in to bexio", http.StatusUnauthorized)
 			return
 		}
 		log.Printf("%s %s %s %q", r.Method, r.URL.Path, r.Header.Get("Mcp-Method"), r.UserAgent())
+		r.Header.Set("Authorization", "Bearer "+access.Token)
+		r = r.WithContext(context.WithValue(r.Context(), readOnlyKey{}, access.ReadOnly))
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // tool calls are small JSON-RPC messages
 		next.ServeHTTP(w, r)
 	})
-}
-
-// tokenUsable checks for a bearer token that has not expired. The token is
-// deliberately not verified: it is only ever forwarded to bexio's own API,
-// which validates it (this server owns no data to protect). Reading the
-// unverified exp claim lets Claude refresh before bexio rejects calls.
-func tokenUsable(header string) bool {
-	scheme, token, _ := strings.Cut(header, " ")
-	if !strings.EqualFold(scheme, "Bearer") || token == "" {
-		return false
-	}
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return true // not a JWT: let bexio decide
-	}
-	var claims struct{ Exp int64 }
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil || json.Unmarshal(payload, &claims) != nil || claims.Exp == 0 {
-		return true
-	}
-	return time.Now().Unix() < claims.Exp
 }
 
 type docsInput struct {
