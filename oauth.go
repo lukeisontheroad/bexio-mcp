@@ -509,7 +509,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outl
 <div class="actions"><button name="action" value="allow">Continue to bexio</button><button name="action" value="deny">Cancel</button></div>
 </form>
 </div>
-<p class="note">Bank payments and payroll are never available through this connector.<br>BexTrackMCP {{.Version}}</p>
+<p class="note">Bank payments and payroll are never available through this connector.<br>
+Provided as is, without warranty or liability. Use at your own risk.<br>BexTrackMCP {{.Version}}</p>
 </body>
 </html>
 `))

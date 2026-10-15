@@ -10,6 +10,13 @@ Hosted instance:
 https://mcp.bextrack.com/mcp
 ```
 
+> **No warranty, no liability.** The hosted instance is a free, best-effort
+> service provided as is: no guarantee of availability, security,
+> correctness or continued operation, and no liability for any damage or
+> loss, including changes it makes to your bexio data on your instruction.
+> Use it at your own risk, or run your own (see below). The code is MIT
+> licensed under the same terms.
+
 API reference for bexio: https://docs.bexio.com/
 
 ## What it can do
@@ -129,6 +136,10 @@ Endpoints: `/mcp` and `/mcp/<label>` (MCP), `/oauth/*` and
 `/.well-known/oauth-authorization-server` (sign-in),
 `/.well-known/oauth-protected-resource[/mcp...]` (also fine for health
 checks).
+
+## License
+
+[MIT](LICENSE). Security issues: see [SECURITY.md](SECURITY.md).
 
 ## Development
 
