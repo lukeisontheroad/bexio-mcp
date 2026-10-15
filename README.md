@@ -73,6 +73,17 @@ label (`/mcp/acme`, `/mcp/globex`, ...), and sign each one in to a
 different company. All of them can be enabled in the same chat. The label
 is just a name; the token decides the company.
 
+**Other MCP clients** use the same bexio app; register each client's
+redirect URI there too (as of 2026-10):
+
+| Client      | Redirect URI                                                                 |
+|-------------|------------------------------------------------------------------------------|
+| claude.ai / Desktop / mobile | `https://claude.ai/api/mcp/auth_callback`                   |
+| ChatGPT     | shown when creating the app: `https://chatgpt.com/connector/oauth/<id>` (legacy: `https://chatgpt.com/connector_platform_oauth_redirect`) |
+| Claude Code | `http://localhost:<port>/callback`, with `claude mcp add --transport http --client-id <id> --client-secret --callback-port <port> bexio-acme https://bexio-mcp.example.com/mcp/acme` |
+| VS Code     | `https://vscode.dev/redirect` and `http://127.0.0.1:33418/`                  |
+| Cursor      | `cursor://anysphere.cursor-mcp/oauth/callback`                               |
+
 **Safety:** keep `bexio_write` on "Needs approval" in the connector's tool
 permissions; it can issue and send documents and delete records.
 
