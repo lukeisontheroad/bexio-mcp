@@ -70,7 +70,11 @@ func main() {
 	}
 	addr := ":" + cmp.Or(os.Getenv("PORT"), "8080")
 	log.Printf("listening on %s, connector URL %s/mcp", addr, publicURL)
-	srv := &http.Server{Addr: addr, Handler: newHandler(publicURL), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{
+		Addr: addr, Handler: newHandler(publicURL),
+		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
+		WriteTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute, // bexio calls time out after 1 minute
+	}
 	log.Fatal(srv.ListenAndServe())
 }
 
@@ -166,6 +170,7 @@ func requireBearer(next http.Handler, publicURL string) http.Handler {
 			http.Error(w, "sign in to bexio", http.StatusUnauthorized)
 			return
 		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // tool calls are small JSON-RPC messages
 		next.ServeHTTP(w, r)
 	})
 }

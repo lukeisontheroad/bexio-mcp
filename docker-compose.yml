@@ -1,0 +1,29 @@
+name: bexio-hosted-mcp
+
+# .env next to this file: PUBLIC_URL (required) and HOST_PORT (loopback port
+# the reverse proxy or tunnel forwards to).
+services:
+  mcp:
+    build: .
+    image: bexio-hosted-mcp:latest
+    restart: unless-stopped
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL in .env}
+    # Loopback only: the tunnel or reverse proxy is the sole way in.
+    ports:
+      - "127.0.0.1:${HOST_PORT:-8080}:8080"
+    # Stateless and unprivileged: nothing writable, no capabilities, no way
+    # to gain privileges, bounded resources.
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 100
+    mem_limit: 128m
+    cpus: 0.5
+    ulimits:
+      nofile: { soft: 1024, hard: 1024 }
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
