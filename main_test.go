@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getsentry/sentry-go"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 )
@@ -300,6 +301,17 @@ func TestSignIn(t *testing.T) {
 	status, refreshed := tokenRequest(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {body["refresh_token"].(string)}, "client_id": {reg.ClientID}})
 	if status != 200 || fake.token.Get("refresh_token") != "bexio-refresh" || refreshed["access_token"] == nil {
 		t.Fatalf("refresh: %d %v", status, refreshed)
+	}
+}
+
+func TestScrubEvent(t *testing.T) {
+	event := scrubEvent(&sentry.Event{
+		Request: &sentry.Request{Method: "GET", URL: "https://mcp.example.com/oauth/callback", QueryString: "code=secret",
+			Headers: map[string]string{"Authorization": "Bearer secret"}, Cookies: "flow=secret", Data: "secret"},
+		User: sentry.User{IPAddress: "192.0.2.1"},
+	}, nil)
+	if r := event.Request; r.QueryString != "" || r.Headers != nil || r.Cookies != "" || r.Data != "" || r.URL == "" || event.User.IPAddress != "" {
+		t.Fatalf("not scrubbed: %+v %+v", event.Request, event.User)
 	}
 }
 

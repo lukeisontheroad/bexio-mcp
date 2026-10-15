@@ -82,6 +82,10 @@ connector per company and give each URL its own label, e.g.
 - **Logs** hold method, path, MCP method, client user agent, bexio
   operation and status code. Never tokens, codes, query strings, request or
   response bodies.
+- **Error reports (optional):** only with `SENTRY_DSN` set, and only real
+  faults (crashes, network errors, bexio 5xx). Events keep method, path,
+  message and stack trace; query strings, headers, cookies, bodies and user
+  info are stripped before sending.
 - **In transit:** TLS ends at the reverse proxy (Cloudflare for the hosted
   instance), which forwards to the container on loopback.
 
@@ -128,6 +132,8 @@ or `docker compose up -d` with a `.env` (chmod 600) next to
 | `BEXIO_CLIENT_ID`     | Client ID of your bexio app (developer.bexio.com)          |
 | `BEXIO_CLIENT_SECRET` | Its secret                                                 |
 | `PORT`                | Listen port, default `8080`                                |
+| `SENTRY_DSN`          | Optional: report faults to Sentry; off when unset          |
+| `SENTRY_ENVIRONMENT`  | Optional: Sentry environment name                          |
 | `IMAGE`, `HOST_PORT`  | compose only: image to run, loopback port to publish       |
 
 The bexio app needs exactly one redirect URI: `<PUBLIC_URL>/oauth/callback`.

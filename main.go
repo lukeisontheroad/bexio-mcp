@@ -22,6 +22,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getsentry/sentry-go"
+	sentryhttp "github.com/getsentry/sentry-go/http"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 )
@@ -49,8 +51,18 @@ func main() {
 	}
 	addr := ":" + cmp.Or(os.Getenv("PORT"), "8080")
 	log.Printf("BexTrackMCP %s listening on %s, connector URL %s/mcp", version, addr, publicURL)
+	handler := newHandler(newAuthServer(publicURL, clientID, clientSecret))
+	// Sentry is opt-in: without SENTRY_DSN nothing is reported anywhere.
+	// SENTRY_ENVIRONMENT is read by the SDK itself.
+	if os.Getenv("SENTRY_DSN") != "" {
+		if err := sentry.Init(sentry.ClientOptions{Release: "bexio-mcp@" + version, BeforeSend: scrubEvent}); err != nil {
+			log.Fatal(err)
+		}
+		handler = sentryhttp.New(sentryhttp.Options{Repanic: true}).Handle(handler)
+		log.Print("sentry enabled")
+	}
 	srv := &http.Server{
-		Addr: addr, Handler: newHandler(newAuthServer(publicURL, clientID, clientSecret)),
+		Addr: addr, Handler: handler,
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
 		WriteTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute, // bexio calls time out after 1 minute
 	}
@@ -85,6 +97,33 @@ func newHandler(auth *authServer) http.Handler {
 	mux.HandleFunc("GET "+prmPath+"/", metadata)
 	auth.routes(mux)
 	return mux
+}
+
+// scrubEvent keeps what identifies a fault (method, path, message, stack)
+// and drops what could carry credentials or customer data: query strings
+// (sign-in codes and state), headers (tokens), cookies, bodies, user info.
+func scrubEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
+	if event.Request != nil {
+		event.Request = &sentry.Request{Method: event.Request.Method, URL: event.Request.URL}
+	}
+	event.User = sentry.User{}
+	return event
+}
+
+// report sends an operational fault to Sentry when it is enabled (a no-op
+// otherwise). Callers pass operation names and status codes only, never
+// bexio data; see cause for errors.
+func report(format string, args ...any) {
+	sentry.CaptureException(fmt.Errorf(format, args...))
+}
+
+// cause strips the URL from a request error: URLs can carry search terms.
+func cause(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
 }
 
 // requireBearer unwraps the server's own access token into the bexio token
@@ -208,10 +247,16 @@ func call(ctx context.Context, authorization string, op *operation, in callInput
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		if !errors.Is(err, context.Canceled) { // the client hung up
+			report("bexio %s: %v", op.ID, cause(err))
+		}
 		return "", err
 	}
 	defer resp.Body.Close()
 	log.Printf("bexio %s %d", op.ID, resp.StatusCode)
+	if resp.StatusCode >= 500 {
+		report("bexio %s answered %s", op.ID, resp.Status)
+	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResult+1))
 	switch {
 	case err != nil:

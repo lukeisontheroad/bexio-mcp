@@ -394,6 +394,9 @@ func (s *authServer) token(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil || t.AccessToken == "" {
 		log.Printf("token %s: bexio refused: %v", grantType, err)
+		if resp == nil || resp.StatusCode >= 500 { // bexio down, not a stale code
+			report("bexio token %s: %v", grantType, cause(err))
+		}
 		oauthError(w, http.StatusBadRequest, "invalid_grant") // Claude expects exactly this to restart sign-in
 		return
 	}
