@@ -26,7 +26,16 @@ Claude Desktop/Code, ChatGPT, Cursor, VS Code, ...) access to the
 
 API reference: https://docs.bexio.com/
 
-## Run
+## Hosted instance
+
+```
+https://mcp.bextrack.com/mcp
+```
+
+Add it as a remote MCP server in any client (see [Connect a client](#connect-a-client))
+and sign in with your own bexio account. Nothing is stored on the server.
+
+## Run your own
 
 ```sh
 docker build -t bexio-hosted-mcp .

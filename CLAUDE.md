@@ -43,8 +43,7 @@ ssh pi 'cd ~/dockerapps/mcp.bextrack.com && docker load -i bexio-hosted-mcp.tar 
 - `guide.md`: API conventions shown first by `bexio_docs`; fix recurring
   model mistakes here.
 - `openapi.json`: generated, never hand-edited.
-- `bexio-logo.svg`: bexio's wordmark from its sign-in theme, recoloured for
-  the consent page.
+- `bextrack-logo.svg`: the bextrack app icon, shown on the consent page.
 - Files embedded with `go:embed` must also be in the Dockerfile's explicit
   `COPY` line, or the image build fails.
 

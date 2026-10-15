@@ -437,22 +437,21 @@ func oauthError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, map[string]string{"error": code})
 }
 
-// bexioLogo is the wordmark from bexio's sign-in theme (auth.bexio.com
-// common/bexio/public/bexio-dark.svg), recoloured like bexio's own pages:
-// light on the dark header, lime in the teal badge.
+// bextrackLogo is the bextrack app icon (an hourglass); on the dark header
+// its outline is drawn light.
 //
-//go:embed bexio-logo.svg
-var bexioLogo string
+//go:embed bextrack-logo.svg
+var bextrackLogo string
 
-func logo(color string) template.URL {
-	svg := strings.ReplaceAll(bexioLogo, "#0D2F3B", color)
+func logo(outline string) template.URL {
+	svg := strings.ReplaceAll(bextrackLogo, "#0d2f3b", outline)
 	return template.URL("data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(svg)))
 }
 
-var headerLogo, badgeLogo = logo("#C5D0D3"), logo("#C8DC28")
+var headerLogo, badgeLogo = logo("#c5d0d3"), logo("#0d2f3b")
 
-// consentPage follows the look of bexio's own sign-in pages: light card,
-// dark header, round badge, list rows.
+// consentPage follows the look of bexio's own sign-in pages (light card,
+// dark header, round badge, list rows) in bextrack's colours.
 var consentPage = template.Must(template.New("consent").Parse(`<!doctype html>
 <html lang="en">
 <head>
@@ -461,17 +460,18 @@ var consentPage = template.Must(template.New("consent").Parse(`<!doctype html>
 <title>Connect bexio</title>
 <style>
 :root { color-scheme: light; --page: #f4f4f4; --card: #fff; --head: #0d2e3a; --head-fg: #c5d0d3; --intro: #ebebea;
-  --teal: #0e4b5c; --teal-dark: #0a3744; --lime: #c8dc28; --fg: #1f1f1f; --muted: #6b6b6b; --line: #e6e6e6; --warn: #fff4d6; }
+  --teal: #34606c; --teal-dark: #0d2f3b; --lime: #bcdd37; --fg: #1f1f1f; --muted: #6b6b6b; --line: #e6e6e6; --warn: #fff4d6; }
 * { box-sizing: border-box; }
 body { margin: 0; padding: 16px 16px 32px; background: var(--page); color: var(--fg); font: 15px/1.45 Lato, "Helvetica Neue", Arial, sans-serif; }
 .card { max-width: 480px; margin: 0 auto; background: var(--card); border-radius: 3px; box-shadow: 0 1px 4px rgba(0,0,0,.18); overflow: hidden; }
 header { background: var(--head); color: var(--head-fg); display: flex; align-items: center; justify-content: center; gap: 6px; padding: 12px 0; }
+header { font-size: 22px; letter-spacing: .3px; }
 header img { height: 26px; }
 header span { font-size: 13px; letter-spacing: 1px; padding-top: 6px; }
 .intro { background: var(--intro); text-align: center; padding: 32px 24px 24px; }
 .badge { width: 128px; height: 128px; margin: 0 auto 24px; border-radius: 50%; background: var(--teal); color: var(--lime);
   display: flex; align-items: center; justify-content: center; }
-.badge img { width: 96px; }
+.badge img { width: 76px; }
 .intro p { margin: 0 0 8px; }
 .target { color: var(--muted); font-size: 13px; }
 .target span { font-family: ui-monospace, Menlo, monospace; color: var(--fg); word-break: break-all; }
@@ -492,7 +492,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outl
 </head>
 <body>
 <div class="card">
-<header><img src="{{.HeaderLogo}}" alt="bexio"><span>MCP</span></header>
+<header><img src="{{.HeaderLogo}}" alt="">bextrack<span>MCP</span></header>
 <div class="intro">
 <div class="badge"><img src="{{.BadgeLogo}}" alt=""></div>
 <p><strong>{{or .Name "An application"}}</strong> wants to connect to your bexio account.<br>Choose what it may use.</p>
