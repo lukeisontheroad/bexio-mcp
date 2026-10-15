@@ -161,12 +161,16 @@ func requireBearer(next http.Handler, publicURL string) http.Handler {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		if !tokenUsable(r.Header.Get("Authorization")) {
+		// Access log without tokens or bodies: enough to trace a client's sign-in.
+		authorization := r.Header.Get("Authorization")
+		if !tokenUsable(authorization) {
+			log.Printf("%s %s 401 (bearer sent: %t) %q", r.Method, r.URL.Path, authorization != "", r.UserAgent())
 			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata=%q, scope=%q`,
 				publicURL+prmPath+r.URL.Path, strings.Join(scopes, " ")))
 			http.Error(w, "sign in to bexio", http.StatusUnauthorized)
 			return
 		}
+		log.Printf("%s %s %s %q", r.Method, r.URL.Path, r.Header.Get("Mcp-Method"), r.UserAgent())
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // tool calls are small JSON-RPC messages
 		next.ServeHTTP(w, r)
 	})
@@ -295,6 +299,7 @@ func call(ctx context.Context, authorization string, op *operation, in callInput
 		return "", err
 	}
 	defer resp.Body.Close()
+	log.Printf("bexio %s %d", op.ID, resp.StatusCode)
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResult+1))
 	switch {
 	case err != nil:
