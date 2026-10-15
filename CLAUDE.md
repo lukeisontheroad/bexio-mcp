@@ -26,6 +26,12 @@ python3 scripts/fetch-spec.py          # regenerate openapi.json
 - Merging release-please's PR on `main` tags `vX.Y.Z` and the `release`
   workflow publishes `ghcr.io/<owner>/bexio-mcp:{X.Y.Z,X.Y,latest}` for
   amd64 and arm64, with the version baked in (`-X main.version`).
+- Release steps: PR `dev` → `main` (merge commit, not squash, so
+  release-please sees every conventional commit); release-please opens its
+  release PR. PRs opened by GITHUB_TOKEN start no workflows, so close and
+  reopen it (`gh pr close N && gh pr reopen N`) to run the required checks,
+  then merge. Afterwards bring `main` back into `dev` with a PR, so the
+  release commit and CHANGELOG are on `dev` too.
 
 ## Deploy
 
