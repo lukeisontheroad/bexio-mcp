@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -233,7 +234,7 @@ func (s *authServer) authorize(w http.ResponseWriter, r *http.Request) {
 	nonce := randomString()
 	http.SetCookie(w, s.flowCookie(nonce, 600))
 	u, _ := url.Parse(redirect)
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Cache-Control", "no-store")
@@ -242,10 +243,12 @@ func (s *authServer) authorize(w http.ResponseWriter, r *http.Request) {
 		target = u.Scheme + "://" + u.Host
 	}
 	consentPage.Execute(w, map[string]any{
-		"Name":    client.Name,
-		"Target":  target,
-		"Local":   u.Scheme != "https",
-		"Modules": modules,
+		"HeaderLogo": headerLogo,
+		"BadgeLogo":  badgeLogo,
+		"Name":       client.Name,
+		"Target":     target,
+		"Local":      u.Scheme != "https",
+		"Modules":    modules,
 		"Request": s.seal(sealed{
 			Kind: "consent", Exp: time.Now().Add(10 * time.Minute).Unix(), Client: clientHash(q.Get("client_id")),
 			Redirect: redirect, State: q.Get("state"), Challenge: challenge, Nonce: nonce,
@@ -434,9 +437,22 @@ func oauthError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, map[string]string{"error": code})
 }
 
-// consentPage follows the look of bexio's own sign-in pages (light card,
-// dark header, round badge, list rows) without bexio's logo: a lookalike of
-// the real login would teach users to trust lookalikes.
+// bexioLogo is the wordmark from bexio's sign-in theme (auth.bexio.com
+// common/bexio/public/bexio-dark.svg), recoloured like bexio's own pages:
+// light on the dark header, lime in the teal badge.
+//
+//go:embed bexio-logo.svg
+var bexioLogo string
+
+func logo(color string) template.URL {
+	svg := strings.ReplaceAll(bexioLogo, "#0D2F3B", color)
+	return template.URL("data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(svg)))
+}
+
+var headerLogo, badgeLogo = logo("#C5D0D3"), logo("#C8DC28")
+
+// consentPage follows the look of bexio's own sign-in pages: light card,
+// dark header, round badge, list rows.
 var consentPage = template.Must(template.New("consent").Parse(`<!doctype html>
 <html lang="en">
 <head>
@@ -449,11 +465,13 @@ var consentPage = template.Must(template.New("consent").Parse(`<!doctype html>
 * { box-sizing: border-box; }
 body { margin: 0; padding: 16px 16px 32px; background: var(--page); color: var(--fg); font: 15px/1.45 Lato, "Helvetica Neue", Arial, sans-serif; }
 .card { max-width: 480px; margin: 0 auto; background: var(--card); border-radius: 3px; box-shadow: 0 1px 4px rgba(0,0,0,.18); overflow: hidden; }
-header { background: var(--head); color: var(--head-fg); text-align: center; font-size: 22px; letter-spacing: .5px; padding: 10px 0 12px; }
-header span { font-size: 14px; letter-spacing: 1px; margin-left: 4px; }
+header { background: var(--head); color: var(--head-fg); display: flex; align-items: center; justify-content: center; gap: 6px; padding: 12px 0; }
+header img { height: 26px; }
+header span { font-size: 13px; letter-spacing: 1px; padding-top: 6px; }
 .intro { background: var(--intro); text-align: center; padding: 32px 24px 24px; }
-.badge { width: 104px; height: 104px; margin: 0 auto 24px; border-radius: 50%; background: var(--teal); color: var(--lime);
-  display: flex; align-items: center; justify-content: center; font-size: 30px; font-weight: 700; letter-spacing: 1px; }
+.badge { width: 128px; height: 128px; margin: 0 auto 24px; border-radius: 50%; background: var(--teal); color: var(--lime);
+  display: flex; align-items: center; justify-content: center; }
+.badge img { width: 96px; }
 .intro p { margin: 0 0 8px; }
 .target { color: var(--muted); font-size: 13px; }
 .target span { font-family: ui-monospace, Menlo, monospace; color: var(--fg); word-break: break-all; }
@@ -474,9 +492,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outl
 </head>
 <body>
 <div class="card">
-<header>bexio<span>MCP</span></header>
+<header><img src="{{.HeaderLogo}}" alt="bexio"><span>MCP</span></header>
 <div class="intro">
-<div class="badge" aria-hidden="true">MCP</div>
+<div class="badge"><img src="{{.BadgeLogo}}" alt=""></div>
 <p><strong>{{or .Name "An application"}}</strong> wants to connect to your bexio account.<br>Choose what it may use.</p>
 <p class="target">Afterwards you will be sent back to <span>{{.Target}}</span></p>
 {{if .Local}}<p class="warn">That address opens a program on your own computer. Only continue if you just started this sign-in yourself.</p>{{end}}

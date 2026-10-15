@@ -3,7 +3,7 @@ FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download && go mod verify
-COPY *.go openapi.json guide.md ./
+COPY *.go openapi.json guide.md bexio-logo.svg ./
 RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /bexio-hosted-mcp .
 
 # Empty image: no shell, package manager, sudo or libc. Just the static
