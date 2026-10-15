@@ -29,11 +29,12 @@ python3 scripts/fetch-spec.py          # regenerate openapi.json
 
 - Stateless: never store, log or cache tokens. The bearer token is forwarded
   to api.bexio.com only.
-- Bank payments and payroll stay excluded (`excludedTags`, `defaultScopes`):
-  a chat connector must not move money or read salary data.
-- `defaultScopes`: one scope bexio doesn't know makes it reject the whole
-  sign-in (e.g. `general` is documented but not requestable). Add only
-  verified names.
+- Bank payments and payroll stay excluded (`servable` in spec.go, absent
+  from `modules`): a chat connector must not move money or read salary data.
+- `modules` (main.go) maps URL modules to OAuth scopes; the connector URL
+  `/mcp/<label>/<modules>/readonly` selects them (`connectorConfig`). One
+  scope bexio doesn't know makes it reject the whole sign-in (e.g.
+  `general` is documented but not requestable). Add only verified names.
 - bexio tokens are bound to one company. Several companies means several
   connectors (`/mcp/<label>`); there is no company parameter.
 - Use `example.com`/Acme placeholders in docs and tests, never real company

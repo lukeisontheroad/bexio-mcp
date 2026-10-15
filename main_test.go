@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -42,21 +43,26 @@ func TestServer(t *testing.T) {
 	defer bexio.Close()
 	apiURL = bexio.URL
 
-	srv := httptest.NewServer(newHandler("https://mcp.example.com", []string{"contact_show", "offline_access"}))
+	srv := httptest.NewServer(newHandler("https://mcp.example.com"))
 	defer srv.Close()
 
 	// Missing and expired tokens start the sign-in.
 	for _, token := range []string{"", jwt(time.Now().Add(-time.Minute))} {
-		req, _ := http.NewRequest("POST", srv.URL+"/mcp/acme", strings.NewReader("{}"))
+		req, _ := http.NewRequest("POST", srv.URL+"/mcp/acme/contacts/readonly", strings.NewReader("{}"))
 		req.Header.Set("Authorization", "Bearer "+token)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := `Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp/acme", scope="contact_show offline_access"`
+		want := `Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp/acme/contacts/readonly", ` +
+			`scope="openid profile email offline_access company_profile contact_show"`
 		if resp.StatusCode != 401 || resp.Header.Get("WWW-Authenticate") != want {
 			t.Fatalf("got %d %q", resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
 		}
+	}
+
+	if resp, _ := http.Post(srv.URL+"/mcp/acme/payroll", "application/json", nil); resp.StatusCode != 404 {
+		t.Fatalf("unknown module answered %d", resp.StatusCode)
 	}
 
 	resp, err := http.Get(srv.URL + prmPath + "/mcp/acme")
@@ -70,14 +76,17 @@ func TestServer(t *testing.T) {
 	}
 
 	token := jwt(time.Now().Add(time.Hour))
-	client := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil)
-	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{
-		Endpoint: srv.URL + "/mcp/acme", HTTPClient: &http.Client{Transport: bearer(token)},
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
+	connect := func(path string) *mcp.ClientSession {
+		t.Helper()
+		session, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).Connect(context.Background(),
+			&mcp.StreamableClientTransport{Endpoint: srv.URL + path, HTTPClient: &http.Client{Transport: bearer(token)}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { session.Close() })
+		return session
 	}
-	defer session.Close()
+	session := connect("/mcp/acme")
 	callTool := func(name string, args map[string]any) *mcp.CallToolResult {
 		t.Helper()
 		res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
@@ -89,13 +98,13 @@ func TestServer(t *testing.T) {
 	text := func(res *mcp.CallToolResult) string { return res.Content[0].(*mcp.TextContent).Text }
 
 	res := callTool("bexio_read", map[string]any{
-		"operation": "v2SearchContact", "query": map[string]any{"limit": 2000},
+		"operation": "v2SearchContact", "query": map[string]any{"limit": 2000, "fields[]": []any{"id", "name_1"}},
 		"body": []any{map[string]any{"field": "name_1", "value": "%acme%", "criteria": "like"}},
 	})
 	if res.IsError || text(res) != `[{"id":1}]` {
 		t.Fatalf("search: %v", text(res))
 	}
-	if got.Method != "POST" || got.URL.Path != "/2.0/contact/search" || got.URL.RawQuery != "limit=2000" ||
+	if got.Method != "POST" || got.URL.Path != "/2.0/contact/search" || got.URL.RawQuery != "fields%5B%5D=id&fields%5B%5D=name_1&limit=2000" ||
 		got.Header.Get("Authorization") != "Bearer "+token || !strings.Contains(gotBody, `"%acme%"`) {
 		t.Fatalf("forwarded %s %s body %s auth %q", got.Method, got.URL, gotBody, got.Header.Get("Authorization"))
 	}
@@ -105,12 +114,21 @@ func TestServer(t *testing.T) {
 		t.Fatalf("path %s", got.URL.Path)
 	}
 
+	if res := callTool("bexio_read", map[string]any{"operation": "v2ShowContact", "path_params": map[string]any{"contact_id": ".."}}); !res.IsError {
+		t.Fatal("'..' path parameter was forwarded")
+	}
+
 	if res := callTool("bexio_read", map[string]any{"operation": "v2DeleteContact", "path_params": map[string]any{"contact_id": 1}}); !res.IsError {
 		t.Fatal("bexio_read ran a write operation")
 	}
 
 	if res := callTool("bexio_docs", map[string]any{}); !strings.Contains(text(res), "Contacts (") || strings.Contains(text(res), "Employees") {
 		t.Fatalf("index: %s", text(res))
+	}
+
+	tools, err := connect("/mcp/acme/readonly").ListTools(context.Background(), nil)
+	if err != nil || len(tools.Tools) != 2 || slices.ContainsFunc(tools.Tools, func(t *mcp.Tool) bool { return t.Name == "bexio_write" }) {
+		t.Fatalf("read-only connector tools: %v %v", tools, err)
 	}
 }
 

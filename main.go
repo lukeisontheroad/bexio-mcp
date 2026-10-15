@@ -15,9 +15,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -37,15 +39,29 @@ const (
 // apiURL is the bexio API base; tests point it at a fake.
 var apiURL = "https://api.bexio.com"
 
-// defaultScopes cover every area except banking payments and payroll, so a
-// chat connector can never move money or read salary data. One unknown scope
-// makes bexio reject the whole sign-in, so only add verified scope names.
-const defaultScopes = "openid profile email offline_access company_profile " +
-	"contact_show contact_edit kb_offer_show kb_offer_edit kb_order_show kb_order_edit " +
-	"kb_invoice_show kb_invoice_edit kb_delivery_show kb_delivery_edit " +
-	"article_show article_edit stock_edit project_show project_edit monitoring_show monitoring_edit " +
-	"note_show note_edit task_show task_edit bank_account_show file accounting " +
-	"kb_bill_show kb_expense_show kb_article_order_show kb_article_order_edit"
+var client = &http.Client{Timeout: time.Minute}
+
+// baseScopes are requested by every connector: identity, refresh tokens and
+// the company profile.
+const baseScopes = "openid profile email offline_access company_profile"
+
+// modules group bexio's OAuth scopes; a connector URL can pick a subset.
+// Banking payments and payroll are deliberately absent, so no connector can
+// move money or read salary data. One unknown scope makes bexio reject the
+// whole sign-in: only add verified scope names.
+var modules = map[string]string{
+	"contacts":    "contact_show contact_edit",
+	"quotes":      "kb_offer_show kb_offer_edit kb_order_edit kb_invoice_edit",
+	"orders":      "kb_order_show kb_order_edit kb_invoice_edit kb_delivery_edit",
+	"invoices":    "kb_invoice_show kb_invoice_edit",
+	"items":       "article_show article_edit stock_edit kb_delivery_show kb_delivery_edit",
+	"projects":    "project_show project_edit monitoring_show monitoring_edit",
+	"notes-tasks": "note_show note_edit task_show task_edit",
+	"master-data": "bank_account_show",
+	"files":       "file",
+	"accounting":  "accounting",
+	"purchase":    "contact_show kb_bill_show kb_expense_show kb_article_order_show kb_article_order_edit",
+}
 
 func main() {
 	publicURL := strings.TrimSuffix(os.Getenv("PUBLIC_URL"), "/")
@@ -54,22 +70,64 @@ func main() {
 	}
 	addr := ":" + cmp.Or(os.Getenv("PORT"), "8080")
 	log.Printf("listening on %s, connector URL %s/mcp", addr, publicURL)
-	log.Fatal(http.ListenAndServe(addr, newHandler(publicURL, strings.Fields(defaultScopes))))
+	srv := &http.Server{Addr: addr, Handler: newHandler(publicURL), ReadHeaderTimeout: 10 * time.Second}
+	log.Fatal(srv.ListenAndServe())
 }
 
-func newHandler(publicURL string, scopes []string) http.Handler {
-	server := newServer(loadAPI())
-	mcpHandler := requireBearer(mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return server },
-		&mcp.StreamableHTTPOptions{Stateless: true},
-	), publicURL, scopes)
+// connectorConfig reads the options in a connector URL,
+// /mcp/<label>/<module,module,...>/readonly: the label only names the
+// connector, no modules means all, and readonly drops every write scope
+// and the bexio_write tool.
+func connectorConfig(path string) (scopes []string, readOnly bool, err error) {
+	picked := map[string]bool{}
+	segments := strings.Split(strings.Trim(strings.TrimPrefix(path, "/mcp"), "/"), "/")
+	for _, segment := range segments[1:] {
+		if segment == "readonly" {
+			readOnly = true
+			continue
+		}
+		for _, m := range strings.Split(segment, ",") {
+			if modules[m] == "" {
+				return nil, false, fmt.Errorf("unknown module %q, known: %s", m, strings.Join(slices.Sorted(maps.Keys(modules)), ", "))
+			}
+			picked[m] = true
+		}
+	}
+	scopes = strings.Fields(baseScopes)
+	for _, m := range slices.Sorted(maps.Keys(modules)) {
+		if len(picked) > 0 && !picked[m] {
+			continue
+		}
+		for _, s := range strings.Fields(modules[m]) {
+			// stock_edit is the only scope that reads stock, so it stays.
+			if !slices.Contains(scopes, s) && !(readOnly && strings.HasSuffix(s, "_edit") && s != "stock_edit") {
+				scopes = append(scopes, s)
+			}
+		}
+	}
+	return scopes, readOnly, nil
+}
 
-	// The token decides the bexio company. /mcp/<label> serves the same thing
-	// under its own URL, so each company can be its own claude.ai connector.
+func newHandler(publicURL string) http.Handler {
+	a := loadAPI()
+	servers := map[bool]*mcp.Server{false: newServer(a, false), true: newServer(a, true)}
+	mcpHandler := requireBearer(mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+		_, readOnly, _ := connectorConfig(r.URL.Path) // validated by requireBearer
+		return servers[readOnly]
+	}, &mcp.StreamableHTTPOptions{Stateless: true}), publicURL)
+
+	// The token decides the bexio company; the URL only picks scopes, so each
+	// company (or scope set) is its own claude.ai connector.
 	metadata := func(w http.ResponseWriter, r *http.Request) {
+		path := cmp.Or(strings.TrimPrefix(r.URL.Path, prmPath), "/mcp")
+		scopes, _, err := connectorConfig(path)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(&oauthex.ProtectedResourceMetadata{
-			Resource:               publicURL + cmp.Or(strings.TrimPrefix(r.URL.Path, prmPath), "/mcp"),
+			Resource:               publicURL + path,
 			AuthorizationServers:   []string{issuer},
 			ScopesSupported:        scopes,
 			BearerMethodsSupported: []string{"header"},
@@ -88,9 +146,15 @@ func newHandler(publicURL string, scopes []string) http.Handler {
 
 // requireBearer answers requests without a usable token with the 401 that
 // starts claude.ai's sign-in: it points at the protected resource metadata,
-// which names bexio as the authorization server.
-func requireBearer(next http.Handler, publicURL string, scopes []string) http.Handler {
+// which names bexio as the authorization server, and asks for the scopes the
+// connector URL selects.
+func requireBearer(next http.Handler, publicURL string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		scopes, _, err := connectorConfig(r.URL.Path)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
 		if !tokenUsable(r.Header.Get("Authorization")) {
 			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata=%q, scope=%q`,
 				publicURL+prmPath+r.URL.Path, strings.Join(scopes, " ")))
@@ -106,8 +170,8 @@ func requireBearer(next http.Handler, publicURL string, scopes []string) http.Ha
 // which validates it (this server owns no data to protect). Reading the
 // unverified exp claim lets Claude refresh before bexio rejects calls.
 func tokenUsable(header string) bool {
-	token, ok := strings.CutPrefix(header, "Bearer ")
-	if !ok || token == "" {
+	scheme, token, _ := strings.Cut(header, " ")
+	if !strings.EqualFold(scheme, "Bearer") || token == "" {
 		return false
 	}
 	parts := strings.Split(token, ".")
@@ -129,16 +193,19 @@ type docsInput struct {
 type callInput struct {
 	Operation  string         `json:"operation" jsonschema:"operationId from bexio_docs, e.g. v2SearchContact"`
 	PathParams map[string]any `json:"path_params,omitempty" jsonschema:"values for the {placeholders} in the operation path, e.g. {\"contact_id\": 42}"`
-	Query      map[string]any `json:"query,omitempty" jsonschema:"query string parameters, e.g. {\"limit\": 20, \"order_by\": \"id_desc\"}"`
+	Query      map[string]any `json:"query,omitempty" jsonschema:"query string parameters, e.g. {\"limit\": 20, \"order_by\": \"id_desc\"}; arrays repeat the parameter"`
 	Body       any            `json:"body,omitempty" jsonschema:"JSON request body as documented by bexio_docs"`
 }
 
-func newServer(a *api) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "bexio", Version: "0.1.0"}, &mcp.ServerOptions{
-		Instructions: "Live access to one bexio company (accounting, CRM, invoicing). Call bexio_docs first: " +
-			"it explains the API conventions and lists the operations. Writes change real books: " +
-			"confirm with the user before creating, changing, deleting, issuing or sending anything.",
-	})
+func newServer(a *api, readOnly bool) *mcp.Server {
+	instructions := "Live access to one bexio company (accounting, CRM, invoicing). Call bexio_docs first: " +
+		"it explains the API conventions and lists the operations. "
+	if readOnly {
+		instructions += "This connector is read-only."
+	} else {
+		instructions += "Writes change real books: confirm with the user before creating, changing, deleting, issuing or sending anything."
+	}
+	s := mcp.NewServer(&mcp.Implementation{Name: "bexio", Version: "0.1.0"}, &mcp.ServerOptions{Instructions: instructions})
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "bexio_docs",
 		Description: "bexio API reference. Start here: no topic gives conventions and operation groups; a group lists its operations; an operationId shows its parameters and request body.",
@@ -152,11 +219,13 @@ func newServer(a *api) *mcp.Server {
 		Description: "Run a read-only bexio operation (GET or search) by operationId. Look up its parameters with bexio_docs first.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, a.caller(true))
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "bexio_write",
-		Description: "Run a bexio operation that changes data (create, edit, delete, issue, send, ...) by operationId. Changes the company's real books: confirm with the user first.",
-		Annotations: &mcp.ToolAnnotations{DestructiveHint: new(true)},
-	}, a.caller(false))
+	if !readOnly {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "bexio_write",
+			Description: "Run a bexio operation that changes data (create, edit, delete, issue, send, ...) by operationId. Changes the company's real books: confirm with the user first.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: new(true)},
+		}, a.caller(false))
+	}
 	return s
 }
 
@@ -177,18 +246,32 @@ func (a *api) caller(readOnly bool) mcp.ToolHandlerFor[callInput, any] {
 func call(ctx context.Context, authorization string, op *operation, in callInput) (string, error) {
 	path := op.Path
 	for k, v := range in.PathParams {
-		path = strings.ReplaceAll(path, "{"+k+"}", url.PathEscape(param(v)))
+		// "." and ".." would climb out of the operation's path.
+		if p := param(v); p != "" && p != "." && p != ".." {
+			path = strings.ReplaceAll(path, "{"+k+"}", url.PathEscape(p))
+		}
 	}
 	if strings.Contains(path, "{") {
-		return "", fmt.Errorf("missing path parameter in %s", path)
+		return "", fmt.Errorf("missing or invalid path parameter in %s", path)
 	}
 	query := url.Values{}
 	for k, v := range in.Query {
-		query.Set(k, param(v))
+		values, ok := v.([]any)
+		if !ok {
+			values = []any{v}
+		}
+		for _, v := range values {
+			if v != nil {
+				query.Add(k, param(v))
+			}
+		}
 	}
 	var body io.Reader
 	if in.Body != nil {
 		b, _ := json.Marshal(in.Body) // decoded from JSON, so it re-encodes
+		if s, ok := in.Body.(string); ok && json.Valid([]byte(s)) {
+			b = []byte(s) // the model sent the body JSON-encoded as a string
+		}
 		body = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, op.Method, apiURL+path+"?"+query.Encode(), body)
@@ -200,7 +283,7 @@ func call(ctx context.Context, authorization string, op *operation, in callInput
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -216,7 +299,7 @@ func call(ctx context.Context, authorization string, op *operation, in callInput
 	case len(data) == 0:
 		return resp.Status, nil // e.g. 204 after a 4.0 delete
 	case len(data) > maxResult:
-		return string(data[:maxResult]) + "\n[truncated: narrow the request with limit/offset or a search]", nil
+		return strings.ToValidUTF8(string(data[:maxResult]), "") + "\n[truncated: narrow the request with limit/offset or a search]", nil
 	}
 	return string(data), nil
 }

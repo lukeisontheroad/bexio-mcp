@@ -17,11 +17,6 @@ var specJSON []byte
 //go:embed guide.md
 var guide string
 
-// excludedTags hide operations that move money (banking payments) or expose
-// salary data (payroll). They are neither documented nor callable, and the
-// scopes they need are never requested.
-var excludedTags = map[string]bool{"Payments": true, "Employees": true, "Absences": true, "Documents": true}
-
 type operation struct {
 	ID, Method, Path, Tag string
 	raw                   map[string]any
@@ -50,7 +45,7 @@ func loadAPI() *api {
 		for _, method := range []string{"get", "post", "put", "patch", "delete"} {
 			raw := obj(item[method])
 			tags, _ := raw["tags"].([]any)
-			if raw == nil || len(tags) == 0 || excludedTags[str(tags[0])] || !servable(path, raw) {
+			if raw == nil || len(tags) == 0 || !servable(path, raw) {
 				continue
 			}
 			op := &operation{
@@ -64,9 +59,14 @@ func loadAPI() *api {
 	return a
 }
 
-// servable drops what a chat connector can't carry: PDF and file downloads
-// (binary) and multipart uploads.
+// servable drops what a chat connector must not or can't carry: banking
+// payments (they move money) and payroll (salary data), which are neither
+// documented nor callable and whose scopes are never requested; PDF and file
+// downloads (binary); and multipart uploads.
 func servable(path string, raw map[string]any) bool {
+	if strings.HasPrefix(path, "/4.0/banking/payments") || strings.HasPrefix(path, "/4.0/payroll") {
+		return false
+	}
 	for _, suffix := range []string{"/pdf", "/download", "/preview"} {
 		if strings.HasSuffix(path, suffix) {
 			return false
@@ -138,7 +138,7 @@ func (a *api) opDoc(op *operation) string {
 		p := a.deref(p)
 		if in := str(p["in"]); in == "path" || in == "query" {
 			fmt.Fprintf(&params, "  %s (%s%s): %s%s\n", p["name"], in, flag(p["required"] == true, ", required"),
-				typeOf(a.deref(p["schema"])), dash(str(p["description"])))
+				a.typeOf(a.deref(p["schema"])), dash(str(p["description"])))
 		}
 	}
 	if params.Len() > 0 {
@@ -174,7 +174,7 @@ func (a *api) fields(b *strings.Builder, s map[string]any, indent string, depth 
 		if p["readOnly"] == true {
 			continue
 		}
-		fmt.Fprintf(b, "%s%s: %s%s%s\n", indent, name, typeOf(p), flag(required[name], ", required"), dash(str(p["description"])))
+		fmt.Fprintf(b, "%s%s: %s%s%s\n", indent, name, a.typeOf(p), flag(required[name], ", required"), dash(str(p["description"])))
 		if str(p["type"]) == "array" {
 			p = a.deref(p["items"])
 		}
@@ -211,10 +211,10 @@ func (a *api) deref(v any) map[string]any {
 	return a.deref(target)
 }
 
-func typeOf(s map[string]any) string {
+func (a *api) typeOf(s map[string]any) string {
 	t := cmp.Or(str(s["type"]), "object") // oneOf variants carry no type
 	if t == "array" {
-		t = "array of " + typeOf(obj(s["items"]))
+		t = "array of " + a.typeOf(a.deref(s["items"]))
 	}
 	if f := str(s["format"]); f != "" {
 		t += " (" + f + ")"

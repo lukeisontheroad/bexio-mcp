@@ -49,14 +49,31 @@ answers 200 for health checks).
    - **Advanced settings**: OAuth client ID and secret from step 1
 3. Connect, sign in to bexio, and pick the company.
 
+**Choosing scopes:** the connector URL picks what bexio is asked to grant:
+`/mcp/<label>/<modules>/readonly`, both parts optional.
+
+| URL                                    | Access                                   |
+|----------------------------------------|------------------------------------------|
+| `/mcp/acme`                            | all modules, read and write              |
+| `/mcp/acme/readonly`                   | all modules, read only                   |
+| `/mcp/acme/contacts,invoices`          | contacts and invoices, read and write    |
+| `/mcp/acme/accounting/readonly`        | accounting, read only                    |
+
+Modules: `contacts`, `quotes`, `orders`, `invoices`, `items`, `projects`,
+`notes-tasks`, `master-data`, `files`, `accounting`, `purchase`. `readonly`
+requests no write scopes and removes the `bexio_write` tool. That matters
+for `files`, `accounting` and stock, where bexio has no separate read
+scope. Bank payments and payroll are never available. After changing a
+connector's modules, reconnect it so bexio issues a token with the new
+scopes.
+
 **Several companies:** add one connector per company, each with its own
 label (`/mcp/acme`, `/mcp/globex`, ...), and sign each one in to a
 different company. All of them can be enabled in the same chat. The label
 is just a name; the token decides the company.
 
 **Safety:** keep `bexio_write` on "Needs approval" in the connector's tool
-permissions; it can issue and send documents and delete records. Set it to
-"Blocked" for read-only use.
+permissions; it can issue and send documents and delete records.
 
 ## Develop
 
