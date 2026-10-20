@@ -280,7 +280,7 @@ func TestSignIn(t *testing.T) {
 	page, _ := io.ReadAll(resp.Body)
 	request := regexp.MustCompile(`name="request" value="([\w-]+)"`).FindSubmatch(page)
 	cookies := resp.Cookies()
-	if resp.StatusCode != 200 || request == nil || len(cookies) != 1 || strings.Contains(string(page), "<b>") || !strings.Contains(string(page), "This connector is for <span>Acme AG</span>") ||
+	if resp.StatusCode != 200 || request == nil || len(cookies) != 1 || strings.Contains(string(page), "<b>") || !strings.Contains(string(page), "This connector is for <strong>Acme AG</strong>") ||
 		!strings.Contains(string(page), `name="contacts" value="write" checked`) {
 		t.Fatalf("consent page: %d %d cookies\n%s", resp.StatusCode, len(cookies), page)
 	}
@@ -333,10 +333,10 @@ func TestSignIn(t *testing.T) {
 	} else if page, _ := io.ReadAll(resp.Body); strings.Contains(string(page), "use this connector URL") {
 		t.Fatalf("no company name page: %s", page)
 	}
-	fake.company = "Acme Group AG"
+	fake.company = "Acme Group <AG>" // escaped on the page
 	if resp := callback(true); resp.StatusCode != 403 || resp.Header.Get("Location") != "" {
 		t.Fatalf("other company: %d %q", resp.StatusCode, resp.Header.Get("Location"))
-	} else if page, _ := io.ReadAll(resp.Body); !strings.Contains(string(page), "This connector is for Acme AG, but you picked Acme Group AG at bexio.") ||
+	} else if page, _ := io.ReadAll(resp.Body); !strings.Contains(string(page), "This connector is for <strong>Acme AG</strong>, but you picked <strong>Acme Group &lt;AG&gt;</strong> at bexio.") ||
 		!strings.Contains(string(page), publicURL+"/mcp/acme-group-ag") {
 		t.Fatalf("other company page: %s", page)
 	}

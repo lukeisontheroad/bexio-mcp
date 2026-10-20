@@ -269,7 +269,7 @@ func (s *authServer) authorize(w http.ResponseWriter, r *http.Request) {
 	redirect, challenge := q.Get("redirect_uri"), q.Get("code_challenge")
 	if !ok || !redirectAllowed(redirect) || !redirectRegistered(client.URIs, redirect) || q.Get("response_type") != "code" ||
 		q.Get("code_challenge_method") != "S256" || len(challenge) != 43 || len(q.Get("state")) > 512 || len(q.Get("resource")) > 512 {
-		showError(w, http.StatusBadRequest, page{Heading: "Invalid sign-in request", Lines: []string{"Remove the connector and add it again."}})
+		showError(w, http.StatusBadRequest, page{Heading: "Invalid sign-in request", Lines: []template.HTML{"Remove the connector and add it again."}})
 		return
 	}
 	// A connector URL /mcp/<company-name> pins the company; clients send it as
@@ -313,7 +313,7 @@ func (s *authServer) consent(w http.ResponseWriter, r *http.Request) {
 	if r.PostFormValue("action") != "allow" {
 		// No redirect: Cancel must not send anyone to a stranger's URI.
 		http.SetCookie(w, s.flowCookie(req.Nonce, -1))
-		showError(w, http.StatusOK, page{Heading: "Cancelled", Lines: []string{"Nothing was shared. You can close this window."}})
+		showError(w, http.StatusOK, page{Heading: "Cancelled", Lines: []template.HTML{"Nothing was shared. You can close this window."}})
 		return
 	}
 	access := map[string]bool{}
@@ -326,7 +326,7 @@ func (s *authServer) consent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(access) == 0 {
-		showError(w, http.StatusBadRequest, page{Heading: "Nothing to share", Lines: []string{"Set at least one row to Read: go back and try again."}})
+		showError(w, http.StatusBadRequest, page{Heading: "Nothing to share", Lines: []template.HTML{"Set at least one row to Read: go back and try again."}})
 		return
 	}
 	verifier := randomString()
@@ -371,17 +371,17 @@ func (s *authServer) callback(w http.ResponseWriter, r *http.Request) {
 		"code_verifier": {st.Verifier}, "redirect_uri": {s.publicURL + "/oauth/callback"}})
 	if err != nil {
 		log.Printf("callback: bexio refused: %v", err)
-		showError(w, http.StatusBadRequest, page{Heading: "Sign-in not finished", Lines: []string{"bexio did not finish the sign-in. Start it again from your app."}})
+		showError(w, http.StatusBadRequest, page{Heading: "Sign-in not finished", Lines: []template.HTML{"bexio did not finish the sign-in. Start it again from your app."}})
 		return
 	}
 	if name := companyName(t.IDToken); st.Company != "" && !sameCompany(st.Company, name) {
 		log.Print("callback: other company than the connector URL pins")
 		want := companyTitle(st.Company)
-		p := page{Heading: "Wrong bexio company", Lines: []string{
-			"This connector is for " + want + ", but you picked " + cmp.Or(name, "another company") + " at bexio.",
-			"Start the sign-in again from your app and pick " + want + "."}}
+		p := page{Heading: "Wrong bexio company", Lines: []template.HTML{
+			"This connector is for " + strong(want) + ", but you picked " + strong(cmp.Or(name, "another company")) + " at bexio.",
+			"Start the sign-in again from your app and pick " + strong(want) + "."}}
 		if name != "" {
-			p.Hint, p.URL = "If "+name+" is the company you want, use this connector URL instead:", s.publicURL+"/mcp/"+slug(name)
+			p.Hint, p.URL = "If "+strong(name)+" is the company you want, use this connector URL instead:", s.publicURL+"/mcp/"+slug(name)
 		}
 		showError(w, http.StatusForbidden, p)
 		return
@@ -593,8 +593,9 @@ var (
 // page is what the templates show: the consent page, or the error page that
 // ends a request here (Heading, Lines and an optional URL to use instead).
 type page struct {
-	Heading, Hint, URL             string
-	Lines                          []string
+	Heading, URL                   string
+	Lines                          []template.HTML // error page text: names only through strong
+	Hint                           template.HTML
 	Name, Target, Company, Request string
 	Local                          bool
 	Modules                        []module
@@ -603,7 +604,12 @@ type page struct {
 	AppStore, GooglePlay           template.URL
 }
 
-var expired = page{Heading: "Sign-in expired", Lines: []string{"This sign-in expired or was not started in this browser. Start it again from your app."}}
+// strong highlights a name in error page text, escaped.
+func strong(name string) template.HTML {
+	return "<strong>" + template.HTML(template.HTMLEscapeString(name)) + "</strong>"
+}
+
+var expired = page{Heading: "Sign-in expired", Lines: []template.HTML{"This sign-in expired or was not started in this browser. Start it again from your app."}}
 
 // render writes a page in the look of bexio's own sign-in pages (light card,
 // dark header, round badge, list rows) in bextrack's colours.
@@ -646,6 +652,7 @@ header span { font-size: 13px; letter-spacing: 1px; padding-top: 6px; }
 .intro h1 { margin: 0 0 12px; font-size: 20px; }
 .intro p { margin: 0 0 8px; }
 .target { color: var(--muted); font-size: 13px; }
+.intro strong { color: var(--fg); }
 .target span { font-family: ui-monospace, Menlo, monospace; color: var(--fg); word-break: break-all; }
 .warn { background: var(--warn); border-radius: 3px; padding: 8px 12px; margin-top: 12px; font-size: 13px; }
 .section { padding: 14px 24px 6px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
@@ -698,7 +705,7 @@ BexTrackMCP {{.Version}} · <a href="https://github.com/lukeisontheroad/bexio-mc
 
 {{define "consent"}}{{template "top" .}}<p><strong>{{or .Name "An application"}}</strong> wants to connect to your bexio account.<br>Choose what it may use.</p>
 <p class="target">Afterwards you will be sent back to <span>{{.Target}}</span></p>
-{{if .Company}}<p class="target">This connector is for <span>{{.Company}}</span>: pick that company at bexio.</p>{{end}}
+{{if .Company}}<p class="target">This connector is for <strong>{{.Company}}</strong>: pick that company at bexio.</p>{{end}}
 {{if .Local}}<p class="warn">That address opens a program on your own computer. Only continue if you just started this sign-in yourself.</p>{{end}}
 </div>
 <form method="post">

@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"log"
 	"maps"
@@ -97,7 +98,7 @@ func newHandler(auth *authServer) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		showError(w, http.StatusNotFound, page{Heading: "Page not found", Lines: []string{"There is nothing to see at this address."},
+		showError(w, http.StatusNotFound, page{Heading: "Page not found", Lines: []template.HTML{"There is nothing to see at this address."},
 			Hint: "To use BexTrackMCP, add this URL as a connector in your app:", URL: auth.publicURL + "/mcp"})
 	})
 	mux.Handle("/mcp", mcpHandler)
@@ -118,7 +119,7 @@ func pageOnPanic(next http.Handler) http.Handler {
 					panic(v)
 				}
 				log.Printf("%s %s panic: %v\n%s", r.Method, r.URL.Path, v, debug.Stack())
-				showError(w, http.StatusInternalServerError, page{Heading: "Something went wrong", Lines: []string{"Please try again in a moment."}})
+				showError(w, http.StatusInternalServerError, page{Heading: "Something went wrong", Lines: []template.HTML{"Please try again in a moment."}})
 			}
 		}()
 		next.ServeHTTP(w, r)
@@ -164,7 +165,7 @@ func requireBearer(next http.Handler, auth *authServer) http.Handler {
 			log.Printf("%s %s 401 (bearer sent: %t) %q", r.Method, r.URL.Path, token != "", r.UserAgent())
 			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata=%q`, auth.publicURL+prmPath+r.URL.Path))
 			if strings.Contains(r.Header.Get("Accept"), "text/html") { // a person opened the connector URL
-				showError(w, http.StatusUnauthorized, page{Heading: "This is a connector URL", Lines: []string{"It works in an app like Claude, not in the browser."},
+				showError(w, http.StatusUnauthorized, page{Heading: "This is a connector URL", Lines: []template.HTML{"It works in an app like Claude, not in the browser."},
 					Hint: "Add it as a connector in your app:", URL: auth.publicURL + r.URL.EscapedPath()})
 				return
 			}
