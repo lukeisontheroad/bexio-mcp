@@ -684,7 +684,7 @@ button:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 <strong>Use this connector at your own risk.</strong> It is provided as is, without warranty or liability.<br>
 BexTrackMCP {{.Version}} · <a href="https://github.com/lukeisontheroad/bexio-mcp" target="_blank" rel="noopener">Source code on GitHub</a></p>
 <p class="note">Track your time in bexio with the BexTrack app:</p>
-<div class="stores"><a href="https://apps.apple.com/app/bextrack/id1534958012?ct=bextrack-mcp&amp;mt=8" target="_blank" rel="noopener"><img src="{{.AppStore}}" alt="Download BexTrack on the App Store"></a>
+<div class="stores"><a href="https://apps.apple.com/app/apple-store/id1534958012?pt=122197988&amp;ct=bextrack-mcp&amp;mt=8" target="_blank" rel="noopener"><img src="{{.AppStore}}" alt="Download BexTrack on the App Store"></a>
 <a href="https://play.google.com/store/apps/details?id=xyz.lukeisontheroad.bexio&amp;referrer=utm_source%3Dbextrack-mcp%26utm_medium%3Dfooter" target="_blank" rel="noopener"><img class="play" src="{{.GooglePlay}}" alt="Get BexTrack on Google Play"></a></div>
 </body>
 </html>
