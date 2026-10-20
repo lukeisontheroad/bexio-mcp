@@ -78,6 +78,7 @@ setting `IMAGE` to the new version's tag and
   documented but not requestable). Add only verified names.
 - bexio tokens are bound to one company. Several companies means several
   connectors (`/mcp/<label>`, the label is free text); there is no company
-  parameter.
+  parameter. `/mcp/<label>/<company-id>` makes the callback refuse other
+  companies (`company_id` claim of bexio's id token, needs `company_profile`).
 - Use `example.com`/Acme placeholders in docs and tests, never real company
   names or personal domains.

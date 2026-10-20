@@ -43,7 +43,8 @@ never requested), PDF and file downloads, file uploads.
    client registration); nobody enters a client ID or secret.
 2. A consent page shows which application asks and where it will be sent
    back, and lets the user pick the areas and whether access is read only.
-3. The user signs in at bexio and picks the company.
+3. The user signs in at bexio and picks the company. If the connector URL
+   names a company (see below), any other one is refused.
 4. The client receives a token that only works through this server.
 
 | Area on the consent page   | bexio scopes                                                         |
@@ -65,8 +66,21 @@ which also covers accounting, files and stock, where bexio has no separate
 read scope.
 
 **Several companies:** a bexio token belongs to one company. Add one
-connector per company and give each URL its own label, e.g.
-`/mcp/acme` and `/mcp/globex`. The label only makes the URLs unique.
+connector per company, each URL with a label and the company's ID:
+`/mcp/<label>/<company-id>`, e.g. `/mcp/acme/12345` and
+`/mcp/globex/67890`. Use the company's name as the label: the consent page
+shows it, and a sign-in to another company is refused with a page saying
+which company the connector is for and which one was picked. A plain
+`/mcp/<label>` also works, but accepts whichever company is picked.
+
+**Find a company's ID:** add the connector with `find` as the ID, e.g.
+`https://mcp.bextrack.com/mcp/acme/find`, connect, and pick the company at
+bexio. The page after bexio shows that company's ID. Add the connector
+again with the ID in place of `find`, then remove the `find` one.
+
+The check relies on the client sending the connector URL at sign-in (the
+`resource` parameter the MCP spec requires). A client that doesn't send it
+is not checked.
 
 ## Data and credentials
 
@@ -103,7 +117,7 @@ connector per company and give each URL its own label, e.g.
 ## Connect a client
 
 **claude.ai / Claude Desktop:** Settings → Connectors → Add custom
-connector, URL `https://mcp.bextrack.com/mcp` (or with a label), OAuth
+connector, URL `https://mcp.bextrack.com/mcp` (or `/mcp/<label>/<company-id>`, see above), OAuth
 client **Register automatically**. Connect, then choose the areas and the
 company. Keep `bexio_write` on "Needs approval" in the connector's tool
 permissions: it can issue and send documents and delete records.
@@ -138,7 +152,7 @@ or `docker compose up -d` with a `.env` (chmod 600) next to
 
 The bexio app needs exactly one redirect URI: `<PUBLIC_URL>/oauth/callback`.
 
-Endpoints: `/mcp` and `/mcp/<label>` (MCP), `/oauth/*` and
+Endpoints: `/mcp`, `/mcp/<label>` and `/mcp/<label>/<company-id>` (MCP), `/oauth/*` and
 `/.well-known/oauth-authorization-server` (sign-in),
 `/.well-known/oauth-protected-resource[/mcp...]` (also fine for health
 checks).

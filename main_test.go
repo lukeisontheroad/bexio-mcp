@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -25,6 +26,7 @@ type fakeBexio struct {
 	api     *http.Request
 	apiBody string
 	token   url.Values
+	company string // company_id in the id token
 }
 
 func setup(t *testing.T) (*httptest.Server, *authServer, *fakeBexio) {
@@ -43,7 +45,8 @@ func setup(t *testing.T) (*httptest.Server, *authServer, *fakeBexio) {
 			io.WriteString(w, `{"error":"invalid_grant"}`)
 			return
 		}
-		io.WriteString(w, `{"access_token":"bexio-access","refresh_token":"bexio-refresh","expires_in":300}`)
+		idToken := "e30." + base64.RawURLEncoding.EncodeToString([]byte(`{"company_id":"`+fake.company+`","company_name":"Globex AG"}`)) + ".sig"
+		io.WriteString(w, `{"access_token":"bexio-access","refresh_token":"bexio-refresh","expires_in":300,"id_token":"`+idToken+`"}`)
 	}))
 	t.Cleanup(bexio.Close)
 	apiURL, bexioTokenURL = bexio.URL, bexio.URL+"/token"
@@ -194,6 +197,7 @@ func TestSignIn(t *testing.T) {
 		resp, err := noRedirect.Get(srv.URL + "/oauth/authorize?" + url.Values{
 			"client_id": {reg.ClientID}, "redirect_uri": {redirect}, "response_type": {responseType},
 			"state": {"xyz"}, "code_challenge": {pkceChallenge(verifier)}, "code_challenge_method": {"S256"},
+			"resource": {publicURL + "/mcp/acme/12345"},
 		}.Encode())
 		if err != nil {
 			t.Fatal(err)
@@ -214,7 +218,7 @@ func TestSignIn(t *testing.T) {
 	page, _ := io.ReadAll(resp.Body)
 	request := regexp.MustCompile(`name="request" value="([\w-]+)"`).FindSubmatch(page)
 	cookies := resp.Cookies()
-	if resp.StatusCode != 200 || request == nil || len(cookies) != 1 || strings.Contains(string(page), "<b>") {
+	if resp.StatusCode != 200 || request == nil || len(cookies) != 1 || strings.Contains(string(page), "<b>") || !strings.Contains(string(page), "This connector is for <span>acme</span>") {
 		t.Fatalf("consent page: %d %d cookies\n%s", resp.StatusCode, len(cookies), page)
 	}
 	consent := func(withCookie bool, action string) *http.Response {
@@ -258,7 +262,19 @@ func TestSignIn(t *testing.T) {
 	if resp := callback(false); resp.StatusCode != 400 || resp.Header.Get("Location") != "" {
 		t.Fatalf("callback without the browser's cookie: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 	}
+	// The connector URL pins company 12345: a sign-in to another one is refused
+	// with a page naming the connector and the company picked.
+	fake.company = "67890"
+	if resp := callback(true); resp.StatusCode != 403 || resp.Header.Get("Location") != "" {
+		t.Fatalf("other company: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	} else if page, _ := io.ReadAll(resp.Body); !strings.Contains(string(page), "This connector is for acme, but you picked Globex AG (company ID 67890)") {
+		t.Fatalf("other company page: %s", page)
+	}
+	fake.company = "12345"
 	resp = callback(true)
+	if fake.token.Get("code") != "bexio-code" || fake.token.Get("code_verifier") == "" || fake.token.Get("client_secret") != "bexio-secret" {
+		t.Fatalf("bexio got %v", fake.token)
+	}
 	back, _ := url.Parse(resp.Header.Get("Location"))
 	code := back.Query().Get("code")
 	if back.Host != "client.example.com" || back.Query().Get("state") != "xyz" || back.Query().Get("iss") != publicURL || code == "" {
@@ -283,7 +299,7 @@ func TestSignIn(t *testing.T) {
 		}
 	}
 	status, body := tokenRequest(exchange)
-	if status != 200 || fake.token.Get("code") != "bexio-code" || fake.token.Get("code_verifier") == "" || fake.token.Get("client_secret") != "bexio-secret" {
+	if status != 200 || fake.token.Get("refresh_token") != "bexio-refresh" || fake.token.Get("client_secret") != "bexio-secret" {
 		t.Fatalf("exchange: %d %v, bexio got %v", status, body, fake.token)
 	}
 
