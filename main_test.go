@@ -150,7 +150,7 @@ func TestServer(t *testing.T) {
 // TestSignIn walks a client through registration, consent, bexio's callback,
 // the code exchange and a refresh, and checks the attacks each step stops.
 func TestSignIn(t *testing.T) {
-	srv, _, fake := setup(t)
+	srv, auth, fake := setup(t)
 	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	postJSON := func(path, body string) *http.Response {
 		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
@@ -269,6 +269,13 @@ func TestSignIn(t *testing.T) {
 		t.Fatalf("other company: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 	} else if page, _ := io.ReadAll(resp.Body); !strings.Contains(string(page), "This connector is for acme, but you picked Globex AG (company ID 67890)") {
 		t.Fatalf("other company page: %s", page)
+	}
+	// Without a company in the connector URL any company is fine.
+	unpinned, _ := http.NewRequest("GET", srv.URL+"/oauth/callback?"+url.Values{"code": {"bexio-code"}, "state": {auth.seal(sealed{
+		Kind: "state", Exp: time.Now().Add(time.Minute).Unix(), Redirect: "https://client.example.com/cb", Nonce: "n"})}}.Encode(), nil)
+	unpinned.AddCookie(&http.Cookie{Name: auth.flowCookie("n", 0).Name, Value: "1"})
+	if resp, err := noRedirect.Do(unpinned); err != nil || resp.StatusCode != 302 {
+		t.Fatalf("unpinned sign-in: %v %v", resp, err)
 	}
 	fake.company = "12345"
 	resp = callback(true)
