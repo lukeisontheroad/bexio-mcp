@@ -138,7 +138,7 @@ func requireBearer(next http.Handler, auth *authServer) http.Handler {
 		// Access log with paths only: queries and bodies carry codes and tokens.
 		scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 		access, ok := auth.open(token, "access")
-		if !ok || access.Access == nil || !strings.EqualFold(scheme, "Bearer") { // nil: sealed before areas existed
+		if !ok || !strings.EqualFold(scheme, "Bearer") {
 			log.Printf("%s %s 401 (bearer sent: %t) %q", r.Method, r.URL.Path, token != "", r.UserAgent())
 			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata=%q`, auth.publicURL+prmPath+r.URL.Path))
 			http.Error(w, "sign in to bexio", http.StatusUnauthorized)

@@ -81,8 +81,7 @@ func TestServer(t *testing.T) {
 	// Anything but a valid access token of this server starts the sign-in:
 	// nothing, a raw bexio token, an expired token, another sealed kind.
 	expired := auth.seal(sealed{Kind: "access", Exp: time.Now().Add(-time.Minute).Unix(), Token: "bexio-access"})
-	legacy := auth.seal(sealed{Kind: "access", Exp: time.Now().Add(time.Hour).Unix(), Token: "bexio-access"}) // no areas yet
-	for _, token := range []string{"", "bexio-access", expired, legacy, auth.seal(sealed{Kind: "refresh", Token: "bexio-access"})} {
+	for _, token := range []string{"", "bexio-access", expired, auth.seal(sealed{Kind: "refresh", Token: "bexio-access"})} {
 		req, _ := http.NewRequest("POST", srv.URL+"/mcp/acme", strings.NewReader("{}"))
 		req.Header.Set("Authorization", "Bearer "+token)
 		resp, err := http.DefaultClient.Do(req)

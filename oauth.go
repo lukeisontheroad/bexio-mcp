@@ -407,7 +407,7 @@ func (s *authServer) token(w http.ResponseWriter, r *http.Request) {
 		grant = c
 	case "refresh_token":
 		rt, ok := s.open(r.PostFormValue("refresh_token"), "refresh")
-		if !ok || rt.Client != caller || rt.Access == nil { // nil: sealed before areas existed
+		if !ok || rt.Client != caller {
 			oauthError(w, http.StatusBadRequest, "invalid_grant")
 			return
 		}
