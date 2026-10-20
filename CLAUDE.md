@@ -51,13 +51,16 @@ setting `IMAGE` to the new version's tag and
 - `main.go`: HTTP server, 401 and protected resource metadata, the three
   MCP tools, request forwarding to api.bexio.com.
 - `oauth.go`: the authorization server clients see: registration, consent
-  page (areas + read only), bexio callback, token endpoint, sealing.
+  page (a row per bexio record type), error page, bexio callback, token
+  endpoint, sealing.
 - `spec.go`: loads the embedded `openapi.json`, filters operations, renders
   `bexio_docs` output.
 - `guide.md`: API conventions shown first by `bexio_docs`; fix recurring
   model mistakes here.
 - `openapi.json`: generated, never hand-edited.
 - `bextrack-logo.svg`: the bextrack app icon, shown on the consent page.
+- `app-store-badge.svg`, `google-play-badge.png`: the official store badges
+  (unmodified), linking to the BexTrack apps in every page's footer.
 - Files embedded with `go:embed` must be in the Dockerfile's `COPY` line
   and allowed in `.dockerignore` (an allowlist), or the image build fails.
 
@@ -73,9 +76,9 @@ setting `IMAGE` to the new version's tag and
   bexio access. Redirect URIs are validated before anything redirects.
 - Bank payments and payroll stay excluded (`servable` in spec.go, absent
   from `modules`): a chat connector must not move money or read salary data.
-- `modules` (oauth.go) maps consent-page areas to OAuth scopes and to the
-  `bexio_docs` groups the server enforces per call; every operation must
-  belong to an area (TestDocs). One scope bexio doesn't know makes it reject
+- `modules` (oauth.go) are the consent-page rows, one per `bexio_docs`
+  group, with the OAuth scopes they need; the server enforces them per call
+  and every operation must belong to a row (TestDocs). One scope bexio doesn't know makes it reject
   the whole sign-in (e.g. `general` is documented but not requestable). Add
   only verified names.
 - bexio tokens are bound to one company. Several companies means several

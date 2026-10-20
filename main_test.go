@@ -94,6 +94,32 @@ func TestServer(t *testing.T) {
 		}
 	}
 
+	// People who open an address in the browser get the error page.
+	page := func(method, path string) (int, string) {
+		t.Helper()
+		req, _ := http.NewRequest(method, srv.URL+path, nil)
+		req.Header.Set("Accept", "text/html")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+	for path, want := range map[string]struct {
+		status int
+		text   string
+	}{"/": {404, "Page not found"}, "/nope": {404, "Page not found"}, "/mcp/acme%20is%20blocked": {401, "/mcp/acme%20is%20blocked"}} {
+		if status, body := page("GET", path); status != want.status || !strings.Contains(body, want.text) || !strings.Contains(body, "BexTrack") {
+			t.Errorf("%s: %d %s", path, status, body)
+		}
+	}
+	panics := httptest.NewServer(pageOnPanic(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") })))
+	defer panics.Close()
+	if resp, err := http.Get(panics.URL); err != nil || resp.StatusCode != 500 {
+		t.Fatalf("panic: %v %v", resp, err)
+	}
+
 	resp, err := http.Get(srv.URL + prmPath + "/mcp/acme")
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +132,7 @@ func TestServer(t *testing.T) {
 
 	all := map[string]bool{}
 	for _, m := range modules {
-		all[m.Name] = !m.ReadOnly
+		all[m.Name()] = m.Writable()
 	}
 	token := auth.seal(sealed{Kind: "access", Exp: time.Now().Add(time.Hour).Unix(), Token: "bexio-access", Access: all})
 	session := connect(t, srv.URL+"/mcp/acme", token)
@@ -254,12 +280,12 @@ func TestSignIn(t *testing.T) {
 	page, _ := io.ReadAll(resp.Body)
 	request := regexp.MustCompile(`name="request" value="([\w-]+)"`).FindSubmatch(page)
 	cookies := resp.Cookies()
-	if resp.StatusCode != 200 || request == nil || len(cookies) != 1 || strings.Contains(string(page), "<b>") || !strings.Contains(string(page), "This connector is for <span>acme-ag</span>") ||
+	if resp.StatusCode != 200 || request == nil || len(cookies) != 1 || strings.Contains(string(page), "<b>") || !strings.Contains(string(page), "This connector is for <strong>Acme AG</strong>") ||
 		!strings.Contains(string(page), `name="contacts" value="write" checked`) {
 		t.Fatalf("consent page: %d %d cookies\n%s", resp.StatusCode, len(cookies), page)
 	}
 	consent := func(withCookie bool, action string) *http.Response {
-		form := url.Values{"request": {string(request[1])}, "contacts": {"write"}, "readonly": {"1"}, "action": {action}}
+		form := url.Values{"request": {string(request[1])}, "contacts": {"read"}, "action": {action}}
 		req, _ := http.NewRequest("POST", srv.URL+"/oauth/authorize", strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		if withCookie {
@@ -301,10 +327,16 @@ func TestSignIn(t *testing.T) {
 	}
 	// The connector URL pins Acme AG: a sign-in to another company is refused
 	// with a page naming it and its connector URL.
-	fake.company = "Acme Group AG"
+	fake.company = "" // no company_name claim: refused, with nothing to suggest
+	if resp := callback(true); resp.StatusCode != 403 {
+		t.Fatalf("no company name: %d", resp.StatusCode)
+	} else if page, _ := io.ReadAll(resp.Body); strings.Contains(string(page), "use this connector URL") {
+		t.Fatalf("no company name page: %s", page)
+	}
+	fake.company = "Acme Group <AG>" // escaped on the page
 	if resp := callback(true); resp.StatusCode != 403 || resp.Header.Get("Location") != "" {
 		t.Fatalf("other company: %d %q", resp.StatusCode, resp.Header.Get("Location"))
-	} else if page, _ := io.ReadAll(resp.Body); !strings.Contains(string(page), "This connector is for acme-ag, but you picked Acme Group AG") ||
+	} else if page, _ := io.ReadAll(resp.Body); !strings.Contains(string(page), "This connector is for <strong>Acme AG</strong>, but you picked <strong>Acme Group &lt;AG&gt;</strong> at bexio.") ||
 		!strings.Contains(string(page), publicURL+"/mcp/acme-group-ag") {
 		t.Fatalf("other company page: %s", page)
 	}
@@ -369,12 +401,24 @@ func TestScopes(t *testing.T) {
 	base := "openid profile email offline_access company_profile "
 	for want, access := range map[string]map[string]bool{
 		"contact_show contact_edit kb_invoice_show": {"contacts": true, "invoices": false},
-		"article_show stock_edit kb_delivery_show":  {"items": false},
-		"": {"master-data": true},
+		"kb_delivery_show article_show stock_edit":  {"items": false, "stock-areas": false, "deliveries": false},
+		"": {"units": true},
 	} {
 		if got := scopesFor(access); got != strings.TrimSpace(base+want) {
 			t.Errorf("scopesFor(%v) = %q", access, got)
 		}
+	}
+}
+
+func TestCompany(t *testing.T) {
+	if !sameCompany("acmeag", "Acme AG") || !sameCompany("acme-ag", "ACME ag") || sameCompany("acme-ag", "Acme Group AG") {
+		t.Error("sameCompany")
+	}
+	if got := companyTitle("acme-group-gmbh"); got != "Acme Group GmbH" {
+		t.Errorf("companyTitle = %q", got)
+	}
+	if companyTitle("") != "" {
+		t.Error("companyTitle of nothing")
 	}
 }
 
@@ -398,7 +442,10 @@ func TestScrubEvent(t *testing.T) {
 }
 
 func TestDocs(t *testing.T) {
-	a := loadAPI()
+	a := bexioAPI
+	if (module{Tag: "Bank Accounts"}).Writable() {
+		t.Error("bank accounts can be changed")
+	}
 	for id := range a.ops {
 		if doc, err := a.doc(id); err != nil || !strings.Contains(doc, id) {
 			t.Fatalf("%s: %v", id, err)
@@ -408,8 +455,8 @@ func TestDocs(t *testing.T) {
 		t.Fatal("bank payments are documented")
 	}
 	for id, op := range a.ops {
-		if op.area(callInput{PathParams: map[string]any{"kb_document_type": "kb_offer"}}).Name == "" {
-			t.Errorf("%s (%s) is in no consent-page area", id, op.Tag)
+		if op.area(callInput{PathParams: map[string]any{"kb_document_type": "kb_offer"}}).Tag == "" {
+			t.Errorf("%s (%s) is in no consent-page row", id, op.Tag)
 		}
 	}
 	doc, _ := a.doc("v2ShowContact")
