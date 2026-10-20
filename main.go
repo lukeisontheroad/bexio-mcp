@@ -15,9 +15,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -69,13 +71,14 @@ func main() {
 	log.Fatal(srv.ListenAndServe())
 }
 
-type readOnlyKey struct{}
+type accessKey struct{}
 
 func newHandler(auth *authServer) http.Handler {
 	a := loadAPI()
 	servers := map[bool]*mcp.Server{false: newServer(a, false), true: newServer(a, true)}
 	mcpHandler := requireBearer(mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		return servers[r.Context().Value(readOnlyKey{}) == true]
+		access, _ := r.Context().Value(accessKey{}).(map[string]bool)
+		return servers[!slices.Contains(slices.Collect(maps.Values(access)), true)]
 	}, &mcp.StreamableHTTPOptions{Stateless: true}), auth)
 
 	// /mcp/<company-name> serves the same thing under its own URL, so several
@@ -143,7 +146,7 @@ func requireBearer(next http.Handler, auth *authServer) http.Handler {
 		}
 		log.Printf("%s %s %s %q", r.Method, r.URL.Path, r.Header.Get("Mcp-Method"), r.UserAgent())
 		r.Header.Set("Authorization", "Bearer "+access.Token)
-		r = r.WithContext(context.WithValue(r.Context(), readOnlyKey{}, access.ReadOnly))
+		r = r.WithContext(context.WithValue(r.Context(), accessKey{}, access.Access))
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // tool calls are small JSON-RPC messages
 		next.ServeHTTP(w, r)
 	})
@@ -200,6 +203,14 @@ func (a *api) caller(readOnly bool) mcp.ToolHandlerFor[callInput, any] {
 		}
 		if readOnly && !op.readOnly() {
 			return nil, nil, fmt.Errorf("%s changes data: it needs bexio_write, which read-only connectors don't have", op.ID)
+		}
+		area := op.area(in)
+		write, granted := ctx.Value(accessKey{}).(map[string]bool)[area.Name]
+		if !granted {
+			return nil, nil, fmt.Errorf("%s is in %q, which this connector was not granted at sign-in", op.ID, cmp.Or(area.Label, "no area"))
+		}
+		if !write && !op.readOnly() {
+			return nil, nil, fmt.Errorf("%s changes data, but %q is read only for this connector", op.ID, area.Label)
 		}
 		text, err := call(ctx, req.Extra.Header.Get("Authorization"), op, in)
 		return textResult(text), nil, err

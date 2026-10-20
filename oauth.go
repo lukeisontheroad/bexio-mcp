@@ -32,37 +32,47 @@ var (
 // the company profile.
 const baseScopes = "openid profile email offline_access company_profile"
 
-type module struct{ Name, Label, Scopes string }
-
-// modules are the areas offered on the consent page. Banking payments and
-// payroll are deliberately absent, so no client can move money or read salary
-// data. One unknown scope makes bexio reject the whole sign-in: only add
-// verified scope names.
-var modules = []module{
-	{"contacts", "Contacts", "contact_show contact_edit"},
-	{"quotes", "Quotes", "kb_offer_show kb_offer_edit kb_order_edit kb_invoice_edit"},
-	{"orders", "Orders", "kb_order_show kb_order_edit kb_invoice_edit kb_delivery_edit"},
-	{"invoices", "Invoices", "kb_invoice_show kb_invoice_edit"},
-	{"items", "Items, stock and deliveries", "article_show article_edit stock_edit kb_delivery_show kb_delivery_edit"},
-	{"projects", "Projects and time tracking", "project_show project_edit monitoring_show monitoring_edit"},
-	{"notes-tasks", "Notes and tasks", "note_show note_edit task_show task_edit"},
-	{"purchase", "Purchase: bills, expenses, purchase orders", "contact_show kb_bill_show kb_expense_show kb_article_order_show kb_article_order_edit"},
-	{"accounting", "Accounting", "accounting"},
-	{"files", "Files", "file"},
-	{"master-data", "Bank accounts (read only)", "bank_account_show"},
+type module struct {
+	Name, Label, Scopes string
+	Tags                []string // bexio_docs groups, and document types of positions and comments
+	ReadOnly            bool     // nothing to change
 }
 
-// scopesFor turns the areas picked on the consent page into bexio scopes;
-// read-only drops every write scope.
-func scopesFor(picked []string, readOnly bool) string {
+// modules are the areas offered on the consent page, each off, read or read
+// and write. The server enforces that per operation: bexio has no read scope
+// for accounting, files or stock, and master data needs no scope at all.
+// Banking payments and payroll are deliberately absent, so no client can move
+// money or read salary data. One unknown scope makes bexio reject the whole
+// sign-in: only add verified scope names.
+var modules = []module{
+	{"contacts", "Contacts", "contact_show contact_edit", []string{"Contacts", "Additional Addresses", "Contact Relations"}, false},
+	{"quotes", "Quotes", "kb_offer_show kb_offer_edit", []string{"Quotes", "kb_offer"}, false},
+	{"orders", "Orders", "kb_order_show kb_order_edit", []string{"Orders", "kb_order"}, false},
+	{"invoices", "Invoices", "kb_invoice_show kb_invoice_edit", []string{"Invoices", "kb_invoice"}, false},
+	{"items", "Items, stock and deliveries", "article_show article_edit stock_edit kb_delivery_show kb_delivery_edit",
+		[]string{"Items", "Deliveries", "Stock Areas", "Stock locations"}, false},
+	{"projects", "Projects and time tracking", "project_show project_edit monitoring_show monitoring_edit", []string{"Projects", "Timesheets"}, false},
+	{"notes-tasks", "Notes and tasks", "note_show note_edit task_show task_edit", []string{"Notes", "Tasks"}, false},
+	{"purchase", "Purchase: bills, expenses, purchase orders", "contact_show kb_bill_show kb_expense_show kb_article_order_show kb_article_order_edit",
+		[]string{"Bills", "Expenses", "Purchase Orders", "Outgoing Payment"}, false},
+	{"accounting", "Accounting", "accounting",
+		[]string{"Accounts", "Account Groups", "Business Years", "Calendar Years", "Manual Entries", "Reports", "Vat Periods"}, false},
+	{"files", "Files", "file", []string{"Files"}, false},
+	{"master-data", "Master data: units, taxes, currencies, payment types, ...", "", []string{"Business Activities", "Communication Types",
+		"Company Profile", "Contact Groups", "Contact Sectors", "Countries", "Currencies", "Document Settings", "Document templates",
+		"Languages", "Payment Types", "Permissions", "Salutations", "Taxes", "Titles", "Units", "User Management"}, false},
+	{"bank-accounts", "Bank accounts", "bank_account_show", []string{"Bank Accounts"}, true},
+}
+
+// scopesFor turns each area's access into bexio scopes: read drops the
+// area's write scopes. Converting a document needs both areas' write scopes.
+func scopesFor(access map[string]bool) string {
 	scopes := strings.Fields(baseScopes)
 	for _, m := range modules {
-		if !slices.Contains(picked, m.Name) {
-			continue
-		}
+		write, ok := access[m.Name]
 		for _, s := range strings.Fields(m.Scopes) {
 			// stock_edit is the only scope that reads stock, so it stays.
-			if !slices.Contains(scopes, s) && !(readOnly && strings.HasSuffix(s, "_edit") && s != "stock_edit") {
+			if ok && !slices.Contains(scopes, s) && (write || !strings.HasSuffix(s, "_edit") || s == "stock_edit") {
 				scopes = append(scopes, s)
 			}
 		}
@@ -75,19 +85,19 @@ func scopesFor(picked []string, readOnly bool) string {
 // tokens. Encrypting them keeps the server stateless. Kind stops one kind
 // from being replayed as another.
 type sealed struct {
-	Kind      string   `json:"k"`
-	Exp       int64    `json:"e,omitempty"`
-	Client    string   `json:"c,omitempty"` // hash of the client_id it was issued to
-	URIs      []string `json:"u,omitempty"` // a client's registered redirect URIs
-	Name      string   `json:"n,omitempty"`
-	Redirect  string   `json:"r,omitempty"`
-	State     string   `json:"s,omitempty"`
-	Challenge string   `json:"p,omitempty"` // the client's PKCE challenge
-	Verifier  string   `json:"v,omitempty"` // this server's PKCE verifier towards bexio
-	Nonce     string   `json:"o,omitempty"`
-	Token     string   `json:"t,omitempty"` // bexio access or refresh token
-	ReadOnly  bool     `json:"ro,omitempty"`
-	Company   string   `json:"co,omitempty"` // slug of the company name the connector URL pins
+	Kind      string          `json:"k"`
+	Exp       int64           `json:"e,omitempty"`
+	Client    string          `json:"c,omitempty"` // hash of the client_id it was issued to
+	URIs      []string        `json:"u,omitempty"` // a client's registered redirect URIs
+	Name      string          `json:"n,omitempty"`
+	Redirect  string          `json:"r,omitempty"`
+	State     string          `json:"s,omitempty"`
+	Challenge string          `json:"p,omitempty"` // the client's PKCE challenge
+	Verifier  string          `json:"v,omitempty"` // this server's PKCE verifier towards bexio
+	Nonce     string          `json:"o,omitempty"`
+	Token     string          `json:"t,omitempty"`  // bexio access or refresh token
+	Access    map[string]bool `json:"a,omitempty"`  // area name: true to read and write, false to read; others are off
+	Company   string          `json:"co,omitempty"` // slug of the company name the connector URL pins
 }
 
 // authServer is the OAuth authorization server clients see. bexio cannot
@@ -284,23 +294,30 @@ func (s *authServer) consent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Cancelled. You can close this window.", http.StatusOK)
 		return
 	}
-	picked := r.PostForm["module"]
-	if len(picked) == 0 {
+	access := map[string]bool{}
+	for _, m := range modules {
+		switch r.PostFormValue(m.Name) {
+		case "write":
+			access[m.Name] = !m.ReadOnly && r.PostFormValue("readonly") == ""
+		case "read":
+			access[m.Name] = false
+		}
+	}
+	if len(access) == 0 {
 		http.Error(w, "Pick at least one area: go back and try again.", http.StatusBadRequest)
 		return
 	}
-	readOnly := r.PostFormValue("readonly") != ""
 	verifier := randomString()
 	http.SetCookie(w, s.flowCookie(req.Nonce, 600)) // the bexio login may take a while
 	state := s.seal(sealed{
 		Kind: "state", Exp: time.Now().Add(10 * time.Minute).Unix(), Client: req.Client, Redirect: req.Redirect,
-		State: req.State, Challenge: req.Challenge, Verifier: verifier, Nonce: req.Nonce, ReadOnly: readOnly, Company: req.Company,
+		State: req.State, Challenge: req.Challenge, Verifier: verifier, Nonce: req.Nonce, Access: access, Company: req.Company,
 	})
 	http.Redirect(w, r, bexioAuthURL+"?"+url.Values{
 		"client_id":             {s.clientID},
 		"redirect_uri":          {s.publicURL + "/oauth/callback"},
 		"response_type":         {"code"},
-		"scope":                 {scopesFor(picked, readOnly)},
+		"scope":                 {scopesFor(access)},
 		"state":                 {state},
 		"code_challenge":        {pkceChallenge(verifier)},
 		"code_challenge_method": {"S256"},
@@ -344,7 +361,7 @@ func (s *authServer) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	code := s.seal(sealed{
 		Kind: "code", Exp: time.Now().Add(2 * time.Minute).Unix(), Client: st.Client, Redirect: st.Redirect,
-		Challenge: st.Challenge, Token: t.RefreshToken, ReadOnly: st.ReadOnly,
+		Challenge: st.Challenge, Token: t.RefreshToken, Access: st.Access,
 	})
 	s.redirectClient(w, r, st.Redirect, url.Values{"code": {code}, "state": {st.State}})
 }
@@ -411,13 +428,13 @@ func (s *authServer) token(w http.ResponseWriter, r *http.Request) {
 	expiresIn := cmp.Or(t.ExpiresIn, 300)
 	log.Printf("token %s: ok, expires_in %d", grantType, expiresIn)
 	out := map[string]any{
-		"access_token": s.seal(sealed{Kind: "access", Exp: time.Now().Unix() + expiresIn, Token: t.AccessToken, ReadOnly: grant.ReadOnly}),
+		"access_token": s.seal(sealed{Kind: "access", Exp: time.Now().Unix() + expiresIn, Token: t.AccessToken, Access: grant.Access}),
 		"token_type":   "Bearer",
 		"expires_in":   expiresIn,
 	}
 	if refresh := cmp.Or(t.RefreshToken, grant.Token); refresh != "" { // bexio may not rotate
 		// Expires unless used: each refresh issues a new one, so active clients never notice.
-		out["refresh_token"] = s.seal(sealed{Kind: "refresh", Exp: time.Now().AddDate(0, 0, 90).Unix(), Client: grant.Client, Token: refresh, ReadOnly: grant.ReadOnly})
+		out["refresh_token"] = s.seal(sealed{Kind: "refresh", Exp: time.Now().AddDate(0, 0, 90).Unix(), Client: grant.Client, Token: refresh, Access: grant.Access})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -539,9 +556,19 @@ header span { font-size: 13px; letter-spacing: 1px; padding-top: 6px; }
 .target span { font-family: ui-monospace, Menlo, monospace; color: var(--fg); word-break: break-all; }
 .warn { background: var(--warn); border-radius: 3px; padding: 8px 12px; margin-top: 12px; font-size: 13px; }
 .section { padding: 14px 24px 6px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
-label.row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 24px; border-top: 1px solid var(--line); cursor: pointer; }
+.row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 11px 24px; border-top: 1px solid var(--line); }
+label.row { flex-wrap: nowrap; cursor: pointer; }
 label.row:hover { background: #fafafa; }
-label.row small { display: block; color: var(--muted); font-size: 13px; }
+.row small { display: block; color: var(--muted); font-size: 13px; }
+.seg { display: flex; flex: none; margin-left: auto; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; font-size: 13px; }
+.seg label { position: relative; cursor: pointer; }
+.seg label + label { border-left: 1px solid var(--line); }
+.seg input { position: absolute; opacity: 0; }
+.seg span { display: block; padding: 5px 10px; }
+.seg input:checked + span { background: var(--teal); color: #fff; }
+.seg input:focus-visible + span { outline: 2px solid var(--teal-dark); outline-offset: -2px; }
+.md-warn { display: none; margin: 0 24px 11px; }
+form:has(input[name=master-data][value=off]:checked) .md-warn { display: block; }
 input[type=checkbox] { width: 18px; height: 18px; flex: none; accent-color: var(--teal); }
 .actions { display: flex; flex-direction: row-reverse; align-items: center; gap: 8px; padding: 18px 24px; border-top: 1px solid var(--line); }
 button { font: inherit; border: 0; border-radius: 3px; padding: 10px 18px; cursor: pointer; }
@@ -566,9 +593,14 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outl
 <form method="post">
 <input type="hidden" name="request" value="{{.Request}}">
 <div class="section">Areas</div>
-{{range .Modules}}<label class="row">{{.Label}}<input type="checkbox" name="module" value="{{.Name}}" checked></label>
-{{end}}<div class="section">Access</div>
-<label class="row"><span>Read only<small>Can look things up, never changes anything</small></span><input type="checkbox" name="readonly" value="1"></label>
+{{range .Modules}}<div class="row"><span>{{.Label}}</span><span class="seg" role="radiogroup" aria-label="{{.Label}}">
+<label><input type="radio" name="{{.Name}}" value="off"><span>Off</span></label>
+<label><input type="radio" name="{{.Name}}" value="read"{{if .ReadOnly}} checked{{end}}><span>Read</span></label>
+{{if not .ReadOnly}}<label><input type="radio" name="{{.Name}}" value="write" checked><span>Read &amp; write</span></label>{{end}}
+</span></div>
+{{if eq .Name "master-data"}}<p class="warn md-warn">Without master data, creating invoices, contacts and other records may fail: they refer to units, taxes, currencies and payment types.</p>
+{{end}}{{end}}<div class="section">Access</div>
+<label class="row"><span>Read only<small>Can look things up, never changes anything, whatever is set above</small></span><input type="checkbox" name="readonly" value="1"></label>
 <div class="actions"><button name="action" value="allow">Continue to bexio</button><button name="action" value="deny">Cancel</button></div>
 </form>
 </div>

@@ -29,6 +29,21 @@ func (o *operation) readOnly() bool {
 	return o.Method == "GET" || strings.HasSuffix(o.Path, "/search")
 }
 
+// area is the consent-page area of a call: by its group, or for document
+// positions and comments by the document type.
+func (o *operation) area(in callInput) module {
+	tag := o.Tag
+	if strings.HasPrefix(o.Path, "/2.0/{kb_document_type}") {
+		tag = param(in.PathParams["kb_document_type"])
+	}
+	for _, m := range modules {
+		if slices.Contains(m.Tags, tag) {
+			return m
+		}
+	}
+	return module{}
+}
+
 type api struct {
 	root  map[string]any
 	ops   map[string]*operation
