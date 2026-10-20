@@ -269,7 +269,7 @@ func (s *authServer) authorize(w http.ResponseWriter, r *http.Request) {
 	redirect, challenge := q.Get("redirect_uri"), q.Get("code_challenge")
 	if !ok || !redirectAllowed(redirect) || !redirectRegistered(client.URIs, redirect) || q.Get("response_type") != "code" ||
 		q.Get("code_challenge_method") != "S256" || len(challenge) != 43 || len(q.Get("state")) > 512 || len(q.Get("resource")) > 512 {
-		message(w, http.StatusBadRequest, "Invalid sign-in request", "Remove the connector and add it again.")
+		showError(w, http.StatusBadRequest, page{Heading: "Invalid sign-in request", Lines: []string{"Remove the connector and add it again."}})
 		return
 	}
 	// A connector URL /mcp/<company-name> pins the company; clients send it as
@@ -292,13 +292,9 @@ func (s *authServer) authorize(w http.ResponseWriter, r *http.Request) {
 	if u.Scheme != "https" {
 		target = u.Scheme + "://" + u.Host
 	}
-	render(w, http.StatusOK, "consent", map[string]any{
-		"Name":    client.Name,
-		"Target":  target,
-		"Local":   u.Scheme != "https",
-		"Modules": modules,
-		"Company": companyTitle(company),
-		"Request": s.seal(sealed{
+	render(w, http.StatusOK, "consent", page{
+		Name: client.Name, Target: target, Local: u.Scheme != "https", Modules: modules, Company: companyTitle(company),
+		Request: s.seal(sealed{
 			Kind: "consent", Exp: time.Now().Add(10 * time.Minute).Unix(), Client: clientHash(q.Get("client_id")),
 			Redirect: redirect, State: q.Get("state"), Challenge: challenge, Nonce: nonce, Company: company,
 		}),
@@ -311,13 +307,13 @@ func (s *authServer) consent(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	req, ok := s.open(r.PostFormValue("request"), "consent")
 	if _, err := r.Cookie(s.flowCookie(req.Nonce, 0).Name); !ok || err != nil {
-		message(w, http.StatusForbidden, "Sign-in expired", "This sign-in expired or was not started in this browser. Start it again from your app.")
+		showError(w, http.StatusForbidden, expired)
 		return
 	}
 	if r.PostFormValue("action") != "allow" {
 		// No redirect: Cancel must not send anyone to a stranger's URI.
 		http.SetCookie(w, s.flowCookie(req.Nonce, -1))
-		message(w, http.StatusOK, "Cancelled", "Nothing was shared. You can close this window.")
+		showError(w, http.StatusOK, page{Heading: "Cancelled", Lines: []string{"Nothing was shared. You can close this window."}})
 		return
 	}
 	access := map[string]bool{}
@@ -330,7 +326,7 @@ func (s *authServer) consent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(access) == 0 {
-		message(w, http.StatusBadRequest, "Nothing to share", "Set at least one row to Read: go back and try again.")
+		showError(w, http.StatusBadRequest, page{Heading: "Nothing to share", Lines: []string{"Set at least one row to Read: go back and try again."}})
 		return
 	}
 	verifier := randomString()
@@ -358,7 +354,7 @@ func (s *authServer) callback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	st, ok := s.open(q.Get("state"), "state")
 	if _, err := r.Cookie(s.flowCookie(st.Nonce, 0).Name); !ok || err != nil {
-		message(w, http.StatusBadRequest, "Sign-in expired", "This sign-in expired or was not started in this browser. Start it again from your app.")
+		showError(w, http.StatusBadRequest, expired)
 		return
 	}
 	http.SetCookie(w, s.flowCookie(st.Nonce, -1))
@@ -375,18 +371,17 @@ func (s *authServer) callback(w http.ResponseWriter, r *http.Request) {
 		"code_verifier": {st.Verifier}, "redirect_uri": {s.publicURL + "/oauth/callback"}})
 	if err != nil {
 		log.Printf("callback: bexio refused: %v", err)
-		message(w, http.StatusBadRequest, "Sign-in not finished", "bexio did not finish the sign-in. Start it again from your app.")
+		showError(w, http.StatusBadRequest, page{Heading: "Sign-in not finished", Lines: []string{"bexio did not finish the sign-in. Start it again from your app."}})
 		return
 	}
 	if name := cmp.Or(companyName(t.IDToken), "another company"); st.Company != "" && !sameCompany(st.Company, name) {
 		log.Print("callback: other company than the connector URL pins")
 		want := companyTitle(st.Company)
-		render(w, http.StatusForbidden, "message", map[string]any{
-			"Heading": "Wrong bexio company",
-			"Lines": []string{"This connector is for " + want + ", but you picked " + name + " at bexio.",
+		showError(w, http.StatusForbidden, page{
+			Heading: "Wrong bexio company",
+			Lines: []string{"This connector is for " + want + ", but you picked " + name + " at bexio.",
 				"Start the sign-in again from your app and pick " + want + "."},
-			"Hint": "If " + name + " is the company you want, use this connector URL instead:",
-			"URL":  s.publicURL + "/mcp/" + slug(name),
+			Hint: "If " + name + " is the company you want, use this connector URL instead:", URL: s.publicURL + "/mcp/" + slug(name),
 		})
 		return
 	}
@@ -579,10 +574,23 @@ func logo(outline string) template.URL {
 
 var headerLogo, badgeLogo = logo("#c5d0d3"), logo("#0d2f3b")
 
-// render writes one of the pages, which follow the look of bexio's own
-// sign-in pages (light card, dark header, round badge, list rows) in
-// bextrack's colours.
-func render(w http.ResponseWriter, status int, page string, data map[string]any) {
+// page is what the templates show: the consent page, or the error page that
+// ends a request here (Heading, Lines and an optional URL to use instead).
+type page struct {
+	Heading, Hint, URL             string
+	Lines                          []string
+	Name, Target, Company, Request string
+	Local                          bool
+	Modules                        []module
+	Version                        string
+	HeaderLogo, BadgeLogo          template.URL
+}
+
+var expired = page{Heading: "Sign-in expired", Lines: []string{"This sign-in expired or was not started in this browser. Start it again from your app."}}
+
+// render writes a page in the look of bexio's own sign-in pages (light card,
+// dark header, round badge, list rows) in bextrack's colours.
+func render(w http.ResponseWriter, status int, name string, p page) {
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
 	h.Set("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; frame-ancestors 'none'")
@@ -590,14 +598,13 @@ func render(w http.ResponseWriter, status int, page string, data map[string]any)
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	data["Version"], data["HeaderLogo"], data["BadgeLogo"] = version, headerLogo, badgeLogo
-	pages.ExecuteTemplate(w, page, data)
+	p.Version, p.HeaderLogo, p.BadgeLogo = version, headerLogo, badgeLogo
+	pages.ExecuteTemplate(w, name, p)
 }
 
-// message shows a page that ends the sign-in here.
-func message(w http.ResponseWriter, status int, heading string, lines ...string) {
-	render(w, status, "message", map[string]any{"Heading": heading, "Lines": lines})
-}
+// showError ends a request with the error page: every error a person can see,
+// from the sign-in to unknown addresses and crashes.
+func showError(w http.ResponseWriter, status int, p page) { render(w, status, "error", p) }
 
 var pages = template.Must(template.New("").Parse(`{{define "top"}}<!doctype html>
 <html lang="en">
@@ -660,7 +667,7 @@ BexTrackMCP {{.Version}} · <a href="https://github.com/lukeisontheroad/bexio-mc
 </html>
 {{end}}
 
-{{define "message"}}{{template "top" .}}<h1>{{.Heading}}</h1>
+{{define "error"}}{{template "top" .}}<h1>{{.Heading}}</h1>
 {{range .Lines}}<p>{{.}}</p>
 {{end}}{{if .URL}}<p class="target">{{.Hint}}<br><span>{{.URL}}</span></p>
 {{end}}</div>

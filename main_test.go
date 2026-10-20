@@ -94,6 +94,29 @@ func TestServer(t *testing.T) {
 		}
 	}
 
+	// People who open an address in the browser get the error page.
+	page := func(method, path string) (int, string) {
+		t.Helper()
+		req, _ := http.NewRequest(method, srv.URL+path, nil)
+		req.Header.Set("Accept", "text/html")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+	for path, want := range map[string]string{"/": "Page not found", "/nope": "Page not found", "/mcp/acme": "This is a connector URL"} {
+		if status, body := page("GET", path); status != 404 && status != 401 || !strings.Contains(body, want) || !strings.Contains(body, "BexTrack") {
+			t.Errorf("%s: %d %s", path, status, body)
+		}
+	}
+	panics := httptest.NewServer(pageOnPanic(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") })))
+	defer panics.Close()
+	if resp, err := http.Get(panics.URL); err != nil || resp.StatusCode != 500 {
+		t.Fatalf("panic: %v %v", resp, err)
+	}
+
 	resp, err := http.Get(srv.URL + prmPath + "/mcp/acme")
 	if err != nil {
 		t.Fatal(err)
