@@ -34,8 +34,9 @@ Three tools instead of one per endpoint keeps the assistant's tool choice
 reliable; `guide.md` teaches it bexio's quirks (search syntax, partial
 edits, status ids, the `[Network Link]` placeholder for e-mails, ...).
 
-Not available: bank payments and payroll (never callable, their scopes are
-never requested), PDF and file downloads, file uploads.
+Not available: bank payments, including outgoing payments of bills, and
+payroll (never callable, their scopes are never requested), PDF and file
+downloads, file uploads.
 
 ## Signing in and permissions
 
@@ -68,7 +69,7 @@ area's operations, **Read** refuses those that change data and drops the
 area's `_edit` scopes. That also covers accounting, files, stock and master
 data, where bexio has no separate read scope or no scope at all. Turning
 master data off shows a warning: records like invoices and contacts refer to
-units, taxes and currencies. Converting a document (quote to order or
+the signed-in user, units, taxes and currencies. Converting a document (quote to order or
 invoice, order to delivery) needs both areas on Read & write. **Read only**
 sets every area to Read and removes the `bexio_write` tool.
 

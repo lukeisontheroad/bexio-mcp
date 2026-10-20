@@ -54,7 +54,7 @@ var modules = []module{
 	{"projects", "Projects and time tracking", "project_show project_edit monitoring_show monitoring_edit", []string{"Projects", "Timesheets"}, false},
 	{"notes-tasks", "Notes and tasks", "note_show note_edit task_show task_edit", []string{"Notes", "Tasks"}, false},
 	{"purchase", "Purchase: bills, expenses, purchase orders", "contact_show kb_bill_show kb_expense_show kb_article_order_show kb_article_order_edit",
-		[]string{"Bills", "Expenses", "Purchase Orders", "Outgoing Payment"}, false},
+		[]string{"Bills", "Expenses", "Purchase Orders"}, false},
 	{"accounting", "Accounting", "accounting",
 		[]string{"Accounts", "Account Groups", "Business Years", "Calendar Years", "Manual Entries", "Reports", "Vat Periods"}, false},
 	{"files", "Files", "file", []string{"Files"}, false},
@@ -407,7 +407,7 @@ func (s *authServer) token(w http.ResponseWriter, r *http.Request) {
 		grant = c
 	case "refresh_token":
 		rt, ok := s.open(r.PostFormValue("refresh_token"), "refresh")
-		if !ok || rt.Client != caller {
+		if !ok || rt.Client != caller || rt.Access == nil { // nil: sealed before areas existed
 			oauthError(w, http.StatusBadRequest, "invalid_grant")
 			return
 		}
@@ -598,7 +598,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outl
 <label><input type="radio" name="{{.Name}}" value="read"{{if .ReadOnly}} checked{{end}}><span>Read</span></label>
 {{if not .ReadOnly}}<label><input type="radio" name="{{.Name}}" value="write" checked><span>Read &amp; write</span></label>{{end}}
 </span></div>
-{{if eq .Name "master-data"}}<p class="warn md-warn">Without master data, creating invoices, contacts and other records may fail: they refer to units, taxes, currencies and payment types.</p>
+{{if eq .Name "master-data"}}<p class="warn md-warn">Without master data, creating invoices, contacts and other records may fail: they refer to the signed-in user, units, taxes, currencies and payment types.</p>
 {{end}}{{end}}<div class="section">Access</div>
 <label class="row"><span>Read only<small>Can look things up, never changes anything, whatever is set above</small></span><input type="checkbox" name="readonly" value="1"></label>
 <div class="actions"><button name="action" value="allow">Continue to bexio</button><button name="action" value="deny">Cancel</button></div>

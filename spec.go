@@ -34,7 +34,10 @@ func (o *operation) readOnly() bool {
 func (o *operation) area(in callInput) module {
 	tag := o.Tag
 	if strings.HasPrefix(o.Path, "/2.0/{kb_document_type}") {
-		tag = param(in.PathParams["kb_document_type"])
+		tag = "" // a document type, never a group name
+		if t := param(in.PathParams["kb_document_type"]); strings.HasPrefix(t, "kb_") {
+			tag = t
+		}
 	}
 	for _, m := range modules {
 		if slices.Contains(m.Tags, tag) {
@@ -79,7 +82,7 @@ func loadAPI() *api {
 // documented nor callable and whose scopes are never requested; PDF and file
 // downloads (binary); and multipart uploads.
 func servable(path string, raw map[string]any) bool {
-	if strings.HasPrefix(path, "/4.0/banking/payments") || strings.HasPrefix(path, "/4.0/payroll") {
+	if strings.HasPrefix(path, "/4.0/banking/payments") || strings.HasPrefix(path, "/4.0/purchase/outgoing-payments") || strings.HasPrefix(path, "/4.0/payroll") {
 		return false
 	}
 	for _, suffix := range []string{"/pdf", "/download", "/preview"} {

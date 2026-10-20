@@ -81,7 +81,8 @@ func TestServer(t *testing.T) {
 	// Anything but a valid access token of this server starts the sign-in:
 	// nothing, a raw bexio token, an expired token, another sealed kind.
 	expired := auth.seal(sealed{Kind: "access", Exp: time.Now().Add(-time.Minute).Unix(), Token: "bexio-access"})
-	for _, token := range []string{"", "bexio-access", expired, auth.seal(sealed{Kind: "refresh", Token: "bexio-access"})} {
+	legacy := auth.seal(sealed{Kind: "access", Exp: time.Now().Add(time.Hour).Unix(), Token: "bexio-access"}) // no areas yet
+	for _, token := range []string{"", "bexio-access", expired, legacy, auth.seal(sealed{Kind: "refresh", Token: "bexio-access"})} {
 		req, _ := http.NewRequest("POST", srv.URL+"/mcp/acme", strings.NewReader("{}"))
 		req.Header.Set("Authorization", "Bearer "+token)
 		resp, err := http.DefaultClient.Do(req)
@@ -158,10 +159,13 @@ func TestServer(t *testing.T) {
 		return map[string]any{"operation": "v2CreateDefaultPosition", "path_params": map[string]any{"kb_document_type": docType, "document_id": 1}}
 	}
 	for name, res := range map[string]*mcp.CallToolResult{
-		"write to a read-only area":             callOn(some, "bexio_write", map[string]any{"operation": "v2DeleteContact", "path_params": map[string]any{"contact_id": 1}}),
-		"read an area that is off":              callOn(some, "bexio_read", map[string]any{"operation": "v2ListInvoices"}),
-		"invoice position, invoices off":        callOn(some, "bexio_write", position("kb_invoice")),
-		"position of an unknown document":       callOn(some, "bexio_write", position("contact")),
+		"write to a read-only area":       callOn(some, "bexio_write", map[string]any{"operation": "v2DeleteContact", "path_params": map[string]any{"contact_id": 1}}),
+		"read an area that is off":        callOn(some, "bexio_read", map[string]any{"operation": "v2ListInvoices"}),
+		"invoice position, invoices off":  callOn(some, "bexio_write", position("kb_invoice")),
+		"position of an unknown document": callOn(some, "bexio_write", position("contact")),
+		"group name as document type":     callOn(some, "bexio_write", position("Quotes")),
+		"path climbing into another area": callOn(some, "bexio_write", map[string]any{"operation": "v2EditQuote",
+			"path_params": map[string]any{"quote_id": "../../3.0/accounting/manual_entries"}}),
 		"master data off, which needs no scope": callOn(some, "bexio_read", map[string]any{"operation": "v2ListUnits"}),
 	} {
 		if !res.IsError {
@@ -401,8 +405,8 @@ func TestDocs(t *testing.T) {
 			t.Fatalf("%s: %v", id, err)
 		}
 	}
-	if _, err := a.doc("payments"); err == nil {
-		t.Fatal("banking payments are documented")
+	if _, err := a.doc("payments"); err == nil || a.ops["ApiOutgoingPayment_POST"] != nil {
+		t.Fatal("bank payments are documented")
 	}
 	for id, op := range a.ops {
 		if op.area(callInput{PathParams: map[string]any{"kb_document_type": "kb_offer"}}).Name == "" {

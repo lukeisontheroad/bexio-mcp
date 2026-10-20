@@ -138,7 +138,7 @@ func requireBearer(next http.Handler, auth *authServer) http.Handler {
 		// Access log with paths only: queries and bodies carry codes and tokens.
 		scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 		access, ok := auth.open(token, "access")
-		if !ok || !strings.EqualFold(scheme, "Bearer") {
+		if !ok || access.Access == nil || !strings.EqualFold(scheme, "Bearer") { // nil: sealed before areas existed
 			log.Printf("%s %s 401 (bearer sent: %t) %q", r.Method, r.URL.Path, token != "", r.UserAgent())
 			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata=%q`, auth.publicURL+prmPath+r.URL.Path))
 			http.Error(w, "sign in to bexio", http.StatusUnauthorized)
@@ -205,9 +205,13 @@ func (a *api) caller(readOnly bool) mcp.ToolHandlerFor[callInput, any] {
 			return nil, nil, fmt.Errorf("%s changes data: it needs bexio_write, which read-only connectors don't have", op.ID)
 		}
 		area := op.area(in)
-		write, granted := ctx.Value(accessKey{}).(map[string]bool)[area.Name]
+		if area.Name == "" {
+			return nil, nil, fmt.Errorf("%s needs kb_document_type kb_offer, kb_order or kb_invoice", op.ID)
+		}
+		access, _ := ctx.Value(accessKey{}).(map[string]bool)
+		write, granted := access[area.Name]
 		if !granted {
-			return nil, nil, fmt.Errorf("%s is in %q, which this connector was not granted at sign-in", op.ID, cmp.Or(area.Label, "no area"))
+			return nil, nil, fmt.Errorf("%s is in %q, which this connector was not granted at sign-in", op.ID, area.Label)
 		}
 		if !write && !op.readOnly() {
 			return nil, nil, fmt.Errorf("%s changes data, but %q is read only for this connector", op.ID, area.Label)
@@ -220,8 +224,8 @@ func (a *api) caller(readOnly bool) mcp.ToolHandlerFor[callInput, any] {
 func call(ctx context.Context, authorization string, op *operation, in callInput) (string, error) {
 	path := op.Path
 	for k, v := range in.PathParams {
-		// "." and ".." would climb out of the operation's path.
-		if p := param(v); p != "" && p != "." && p != ".." {
+		// ".", ".." and "/" would climb out of the operation's path.
+		if p := param(v); p != "" && p != "." && p != ".." && !strings.Contains(p, "/") {
 			path = strings.ReplaceAll(path, "{"+k+"}", url.PathEscape(p))
 		}
 	}
