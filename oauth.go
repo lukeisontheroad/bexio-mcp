@@ -235,7 +235,9 @@ func (s *authServer) authorize(w http.ResponseWriter, r *http.Request) {
 	var label, company string
 	if rest, ok := strings.CutPrefix(q.Get("resource"), s.publicURL+"/mcp/"); ok {
 		label, company, _ = strings.Cut(strings.Trim(rest, "/"), "/")
-		label, _ = url.PathUnescape(label)
+		if l, err := url.PathUnescape(label); err == nil {
+			label = l
+		}
 	}
 	// A cookie per sign-in ties both the consent form and bexio's callback to
 	// this browser: another site can neither submit the form for the user nor
@@ -309,7 +311,8 @@ func (s *authServer) consent(w http.ResponseWriter, r *http.Request) {
 
 // callback redeems bexio's code, refuses a company other than the one the
 // connector URL pins, and hands the client a code carrying bexio's refresh
-// token. That code only works with the client's PKCE verifier.
+// token. Unlike bexio's code it is not single use: for its 2 minutes the
+// client's PKCE verifier is what stops replays.
 func (s *authServer) callback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	st, ok := s.open(q.Get("state"), "state")
@@ -331,7 +334,7 @@ func (s *authServer) callback(w http.ResponseWriter, r *http.Request) {
 		"code_verifier": {st.Verifier}, "redirect_uri": {s.publicURL + "/oauth/callback"}})
 	if err != nil {
 		log.Printf("callback: bexio refused: %v", err)
-		http.Error(w, "bexio did not finish the sign-in. Start it again from your app.", http.StatusBadGateway)
+		http.Error(w, "bexio did not finish the sign-in. Start it again from your app.", http.StatusBadRequest)
 		return
 	}
 	if id, name := idTokenCompany(t.IDToken); st.Company != "" && id != st.Company {
@@ -442,7 +445,7 @@ func (s *authServer) bexioToken(ctx context.Context, form url.Values) (bexioToke
 			err = errors.New(resp.Status)
 		}
 	}
-	if resp == nil || resp.StatusCode >= 500 { // bexio down, not a stale code
+	if ctx.Err() == nil && (resp == nil || resp.StatusCode >= 500) { // bexio down, not a stale code or a closed tab
 		report("bexio token %s: %v", form.Get("grant_type"), cause(err))
 	}
 	if err == nil && t.AccessToken == "" {

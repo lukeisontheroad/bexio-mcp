@@ -26,7 +26,7 @@ type fakeBexio struct {
 	api     *http.Request
 	apiBody string
 	token   url.Values
-	company string // company_id in the id token
+	company string // company_id in the id token, as JSON
 }
 
 func setup(t *testing.T) (*httptest.Server, *authServer, *fakeBexio) {
@@ -45,7 +45,7 @@ func setup(t *testing.T) (*httptest.Server, *authServer, *fakeBexio) {
 			io.WriteString(w, `{"error":"invalid_grant"}`)
 			return
 		}
-		idToken := "e30." + base64.RawURLEncoding.EncodeToString([]byte(`{"company_id":"`+fake.company+`","company_name":"Globex AG"}`)) + ".sig"
+		idToken := "e30." + base64.RawURLEncoding.EncodeToString([]byte(`{"company_id":`+fake.company+`,"company_name":"Globex AG"}`)) + ".sig"
 		io.WriteString(w, `{"access_token":"bexio-access","refresh_token":"bexio-refresh","expires_in":300,"id_token":"`+idToken+`"}`)
 	}))
 	t.Cleanup(bexio.Close)
@@ -193,11 +193,11 @@ func TestSignIn(t *testing.T) {
 	}
 
 	verifier := "client-verifier-0123456789012345678901234567890"
-	authorize := func(redirect, responseType string) *http.Response {
+	authorize := func(redirect, responseType, resource string) *http.Response {
 		resp, err := noRedirect.Get(srv.URL + "/oauth/authorize?" + url.Values{
 			"client_id": {reg.ClientID}, "redirect_uri": {redirect}, "response_type": {responseType},
 			"state": {"xyz"}, "code_challenge": {pkceChallenge(verifier)}, "code_challenge_method": {"S256"},
-			"resource": {publicURL + "/mcp/acme/12345"},
+			"resource": {resource},
 		}.Encode())
 		if err != nil {
 			t.Fatal(err)
@@ -205,16 +205,20 @@ func TestSignIn(t *testing.T) {
 		return resp
 	}
 	// Before consent nothing redirects, not even to a registered URI.
-	for _, resp := range []*http.Response{authorize("https://evil.example.com/cb", "code"), authorize("https://client.example.com/cb", "token")} {
+	pinned := publicURL + "/mcp/acme/12345"
+	for _, resp := range []*http.Response{authorize("https://evil.example.com/cb", "code", pinned), authorize("https://client.example.com/cb", "token", pinned)} {
 		if resp.StatusCode != 400 || resp.Header.Get("Location") != "" {
 			t.Fatalf("bad authorize request: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 		}
 	}
-	if resp := authorize("http://127.0.0.1:53682/callback", "code"); resp.StatusCode != 200 {
+	// A label alone pins nothing.
+	if resp := authorize("http://127.0.0.1:53682/callback", "code", publicURL+"/mcp/acme"); resp.StatusCode != 200 {
 		t.Fatalf("loopback on another port: %d", resp.StatusCode)
+	} else if page, _ := io.ReadAll(resp.Body); strings.Contains(string(page), "This connector is for") {
+		t.Fatalf("unpinned connector shows a company: %s", page)
 	}
 
-	resp = authorize("https://client.example.com/cb", "code")
+	resp = authorize("https://client.example.com/cb", "code", pinned)
 	page, _ := io.ReadAll(resp.Body)
 	request := regexp.MustCompile(`name="request" value="([\w-]+)"`).FindSubmatch(page)
 	cookies := resp.Cookies()
@@ -264,7 +268,7 @@ func TestSignIn(t *testing.T) {
 	}
 	// The connector URL pins company 12345: a sign-in to another one is refused
 	// with a page naming the connector and the company picked.
-	fake.company = "67890"
+	fake.company = `"67890"`
 	if resp := callback(true); resp.StatusCode != 403 || resp.Header.Get("Location") != "" {
 		t.Fatalf("other company: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 	} else if page, _ := io.ReadAll(resp.Body); !strings.Contains(string(page), "This connector is for acme, but you picked Globex AG (company ID 67890)") {
@@ -277,7 +281,7 @@ func TestSignIn(t *testing.T) {
 	if resp, err := noRedirect.Do(unpinned); err != nil || resp.StatusCode != 302 {
 		t.Fatalf("unpinned sign-in: %v %v", resp, err)
 	}
-	fake.company = "12345"
+	fake.company = "12345" // bexio may send the id as a number
 	resp = callback(true)
 	if fake.token.Get("code") != "bexio-code" || fake.token.Get("code_verifier") == "" || fake.token.Get("client_secret") != "bexio-secret" {
 		t.Fatalf("bexio got %v", fake.token)
