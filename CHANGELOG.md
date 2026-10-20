@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/lukeisontheroad/bexio-mcp/compare/v0.2.0...v0.3.0) (2026-10-20)
+
+
+### Features
+
+* one consent-page row per bexio record type ([#9](https://github.com/lukeisontheroad/bexio-mcp/issues/9)) ([108f61b](https://github.com/lukeisontheroad/bexio-mcp/commit/108f61b42e0b8ff682fb4fa7dadd913964fc8dcb))
+
 ## [0.2.0](https://github.com/lukeisontheroad/bexio-mcp/compare/v0.1.0...v0.2.0) (2026-10-20)
 
 
