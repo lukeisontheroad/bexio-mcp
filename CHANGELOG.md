@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0](https://github.com/lukeisontheroad/bexio-mcp/compare/v0.1.0...v0.2.0) (2026-10-20)
+
+
+### Features
+
+* pin a connector to one bexio company by name ([#4](https://github.com/lukeisontheroad/bexio-mcp/issues/4)) ([d267792](https://github.com/lukeisontheroad/bexio-mcp/commit/d267792a9b990ab5f481f16c69f37843daf7c73e))
+* set each area to off, read or read and write ([#5](https://github.com/lukeisontheroad/bexio-mcp/issues/5)) ([c3effdf](https://github.com/lukeisontheroad/bexio-mcp/commit/c3effdfc1bec76bf5cbab49993da3928286ccf74))
+
 ## 0.1.0 (2026-10-15)
 
 
