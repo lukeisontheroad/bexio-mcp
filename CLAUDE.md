@@ -51,7 +51,8 @@ setting `IMAGE` to the new version's tag and
 - `main.go`: HTTP server, 401 and protected resource metadata, the three
   MCP tools, request forwarding to api.bexio.com.
 - `oauth.go`: the authorization server clients see: registration, consent
-  page (areas + read only), bexio callback, token endpoint, sealing.
+  page (a row per bexio record type), error page, bexio callback, token
+  endpoint, sealing.
 - `spec.go`: loads the embedded `openapi.json`, filters operations, renders
   `bexio_docs` output.
 - `guide.md`: API conventions shown first by `bexio_docs`; fix recurring

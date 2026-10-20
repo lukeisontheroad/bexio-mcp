@@ -374,15 +374,16 @@ func (s *authServer) callback(w http.ResponseWriter, r *http.Request) {
 		showError(w, http.StatusBadRequest, page{Heading: "Sign-in not finished", Lines: []string{"bexio did not finish the sign-in. Start it again from your app."}})
 		return
 	}
-	if name := cmp.Or(companyName(t.IDToken), "another company"); st.Company != "" && !sameCompany(st.Company, name) {
+	if name := companyName(t.IDToken); st.Company != "" && !sameCompany(st.Company, name) {
 		log.Print("callback: other company than the connector URL pins")
 		want := companyTitle(st.Company)
-		showError(w, http.StatusForbidden, page{
-			Heading: "Wrong bexio company",
-			Lines: []string{"This connector is for " + want + ", but you picked " + name + " at bexio.",
-				"Start the sign-in again from your app and pick " + want + "."},
-			Hint: "If " + name + " is the company you want, use this connector URL instead:", URL: s.publicURL + "/mcp/" + slug(name),
-		})
+		p := page{Heading: "Wrong bexio company", Lines: []string{
+			"This connector is for " + want + ", but you picked " + cmp.Or(name, "another company") + " at bexio.",
+			"Start the sign-in again from your app and pick " + want + "."}}
+		if name != "" {
+			p.Hint, p.URL = "If "+name+" is the company you want, use this connector URL instead:", s.publicURL+"/mcp/"+slug(name)
+		}
+		showError(w, http.StatusForbidden, p)
 		return
 	}
 	code := s.seal(sealed{
@@ -680,9 +681,9 @@ BexTrackMCP {{.Version}} · <a href="https://github.com/lukeisontheroad/bexio-mc
 </div>
 <form method="post">
 <input type="hidden" name="request" value="{{.Request}}">
-{{$section := ""}}{{range .Modules}}{{if ne .Section $section}}{{$section = .Section}}<div class="section">{{.Section}}</div>
-{{if eq .Section "Master data"}}<p class="warn md-warn">Contacts, invoices and other records refer to master data: with some of it off, creating them may fail.</p>
-{{end}}{{end}}<div class="row{{if eq .Section "Master data"}} md{{end}}"><span>{{.Tag}}</span><span class="seg" role="radiogroup" aria-label="{{.Tag}}">
+{{$section := ""}}{{range .Modules}}{{$md := eq .Section "Master data"}}{{if ne .Section $section}}{{$section = .Section}}<div class="section">{{.Section}}</div>
+{{if $md}}<p class="warn md-warn">Contacts, invoices and other records refer to master data: with some of it off, creating them may fail.</p>
+{{end}}{{end}}<div class="row{{if $md}} md{{end}}"><span>{{.Tag}}</span><span class="seg" role="radiogroup" aria-label="{{.Tag}}">
 <label><input type="radio" name="{{.Name}}" value="off"><span>Off</span></label>
 <label><input type="radio" name="{{.Name}}" value="read"{{if not .Writable}} checked{{end}}><span>Read</span></label>
 {{if .Writable}}<label><input type="radio" name="{{.Name}}" value="write" checked><span>Read &amp; write</span></label>{{end}}

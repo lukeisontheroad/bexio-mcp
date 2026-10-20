@@ -114,6 +114,9 @@ func pageOnPanic(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if v := recover(); v != nil {
+				if v == http.ErrAbortHandler { // a deliberate, quiet abort
+					panic(v)
+				}
 				log.Printf("%s %s panic: %v\n%s", r.Method, r.URL.Path, v, debug.Stack())
 				showError(w, http.StatusInternalServerError, page{Heading: "Something went wrong", Lines: []string{"Please try again in a moment."}})
 			}
@@ -162,7 +165,7 @@ func requireBearer(next http.Handler, auth *authServer) http.Handler {
 			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata=%q`, auth.publicURL+prmPath+r.URL.Path))
 			if strings.Contains(r.Header.Get("Accept"), "text/html") { // a person opened the connector URL
 				showError(w, http.StatusUnauthorized, page{Heading: "This is a connector URL", Lines: []string{"It works in an app like Claude, not in the browser."},
-					Hint: "Add it as a connector in your app:", URL: auth.publicURL + r.URL.Path})
+					Hint: "Add it as a connector in your app:", URL: auth.publicURL + r.URL.EscapedPath()})
 				return
 			}
 			http.Error(w, "sign in to bexio", http.StatusUnauthorized)

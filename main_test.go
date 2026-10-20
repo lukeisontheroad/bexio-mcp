@@ -106,8 +106,11 @@ func TestServer(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, string(body)
 	}
-	for path, want := range map[string]string{"/": "Page not found", "/nope": "Page not found", "/mcp/acme": "This is a connector URL"} {
-		if status, body := page("GET", path); status != 404 && status != 401 || !strings.Contains(body, want) || !strings.Contains(body, "BexTrack") {
+	for path, want := range map[string]struct {
+		status int
+		text   string
+	}{"/": {404, "Page not found"}, "/nope": {404, "Page not found"}, "/mcp/acme%20is%20blocked": {401, "/mcp/acme%20is%20blocked"}} {
+		if status, body := page("GET", path); status != want.status || !strings.Contains(body, want.text) || !strings.Contains(body, "BexTrack") {
 			t.Errorf("%s: %d %s", path, status, body)
 		}
 	}
@@ -324,6 +327,12 @@ func TestSignIn(t *testing.T) {
 	}
 	// The connector URL pins Acme AG: a sign-in to another company is refused
 	// with a page naming it and its connector URL.
+	fake.company = "" // no company_name claim: refused, with nothing to suggest
+	if resp := callback(true); resp.StatusCode != 403 {
+		t.Fatalf("no company name: %d", resp.StatusCode)
+	} else if page, _ := io.ReadAll(resp.Body); strings.Contains(string(page), "use this connector URL") {
+		t.Fatalf("no company name page: %s", page)
+	}
 	fake.company = "Acme Group AG"
 	if resp := callback(true); resp.StatusCode != 403 || resp.Header.Get("Location") != "" {
 		t.Fatalf("other company: %d %q", resp.StatusCode, resp.Header.Get("Location"))
@@ -433,7 +442,10 @@ func TestScrubEvent(t *testing.T) {
 }
 
 func TestDocs(t *testing.T) {
-	a := loadAPI()
+	a := bexioAPI
+	if (module{Tag: "Bank Accounts"}).Writable() {
+		t.Error("bank accounts can be changed")
+	}
 	for id := range a.ops {
 		if doc, err := a.doc(id); err != nil || !strings.Contains(doc, id) {
 			t.Fatalf("%s: %v", id, err)

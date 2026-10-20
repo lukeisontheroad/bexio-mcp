@@ -60,15 +60,19 @@ downloads, file uploads.
 | Accounting                  | Accounts, Account Groups, Business and Calendar Years, Manual Entries, Reports, Vat Periods, Bank Accounts | `accounting`, `bank_account_show` |
 | Master data                 | Units, Taxes, Currencies, Payment Types, Countries, Languages and 11 more | none                             |
 
-The rows are the groups `bexio_docs` shows, so the assistant sees the same
-names. The server enforces each row itself, on every call: **Off** refuses
-its operations, **Read** refuses those that change data and drops its
-`_edit` scopes. That also covers accounting, files, stock and master data,
+The rows are the groups `bexio_docs` shows (positions and comments follow
+their quote, order or invoice), so the assistant sees the same names. The
+server enforces each row itself, on every call: **Off** refuses its
+operations, **Read** refuses those that change data and drops its `_edit`
+scopes unless a row on Read & write shares them. That also covers accounting, files, stock and master data,
 where bexio has no separate read scope or no scope at all. Rows bexio cannot
 change offer only Off and Read. Turning any master data off shows a warning:
 records like invoices and contacts refer to it. Converting a document (quote
 to order or invoice, order to delivery) needs both rows on Read & write. With
 nothing on Read & write, the `bexio_write` tool is gone.
+
+Errors people see in the browser (sign-in errors, unknown addresses, a
+connector URL opened directly, crashes) share the consent page's design.
 
 **Several companies:** a bexio token belongs to one company. Add one
 connector per company, with the company's name in the URL, e.g.
