@@ -77,8 +77,8 @@ setting `IMAGE` to the new version's tag and
   bexio doesn't know makes it reject the whole sign-in (e.g. `general` is
   documented but not requestable). Add only verified names.
 - bexio tokens are bound to one company. Several companies means several
-  connectors (`/mcp/<label>`, the label is free text); there is no company
-  parameter. `/mcp/<label>/<company-id>` makes the callback refuse other
-  companies (`company_id` claim of bexio's id token, needs `company_profile`).
+  connectors, `/mcp/<company-name>`; there is no company parameter. The
+  callback refuses a company whose name (`company_name` claim of bexio's id
+  token, needs `company_profile`) has another `slug`.
 - Use `example.com`/Acme placeholders in docs and tests, never real company
   names or personal domains.

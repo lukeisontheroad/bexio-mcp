@@ -78,9 +78,9 @@ func newHandler(auth *authServer) http.Handler {
 		return servers[r.Context().Value(readOnlyKey{}) == true]
 	}, &mcp.StreamableHTTPOptions{Stateless: true}), auth)
 
-	// /mcp/<label> serves the same thing under its own URL, so several
-	// connectors (one per bexio company) can coexist in one client;
-	// /mcp/<label>/<company-id> also refuses sign-ins to other companies.
+	// /mcp/<company-name> serves the same thing under its own URL, so several
+	// connectors (one per bexio company) can coexist in one client; sign-ins
+	// to a company of another name are refused (see authorize).
 	metadata := func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, &oauthex.ProtectedResourceMetadata{
 			Resource:               auth.publicURL + cmp.Or(strings.TrimPrefix(r.URL.Path, prmPath), "/mcp"),

@@ -66,17 +66,12 @@ which also covers accounting, files and stock, where bexio has no separate
 read scope.
 
 **Several companies:** a bexio token belongs to one company. Add one
-connector per company, each URL with a label and the company's ID:
-`/mcp/<label>/<company-id>`, e.g. `/mcp/acme/12345` and
-`/mcp/globex/67890`. Use the company's name as the label: the consent page
-shows it, and a sign-in to another company is refused with a page saying
-which company the connector is for and which one was picked. A plain
-`/mcp/<label>` also works, but accepts whichever company is picked.
-
-**Find a company's ID:** add the connector with `find` as the ID, e.g.
-`https://mcp.bextrack.com/mcp/acme/find`, connect, and pick the company at
-bexio. The page after bexio shows that company's ID. Add the connector
-again with the ID in place of `find`, then remove the `find` one.
+connector per company, with the company's name in the URL, e.g.
+`/mcp/acme-ag` for "Acme AG" and `/mcp/acme-group-ag` for "Acme Group AG".
+Case, spaces and punctuation don't matter, but the whole name must match:
+`/mcp/acme` is neither. A sign-in to another company is refused with a page
+naming the company picked and its connector URL, so a misspelt name shows
+the right one. Plain `/mcp` accepts whichever company is picked.
 
 The check relies on the client sending the connector URL at sign-in (the
 `resource` parameter the MCP spec requires). A client that doesn't send it
@@ -117,7 +112,7 @@ is not checked.
 ## Connect a client
 
 **claude.ai / Claude Desktop:** Settings → Connectors → Add custom
-connector, URL `https://mcp.bextrack.com/mcp` (or `/mcp/<label>/<company-id>`, see above), OAuth
+connector, URL `https://mcp.bextrack.com/mcp` (or `/mcp/<company-name>`, see above), OAuth
 client **Register automatically**. Connect, then choose the areas and the
 company. Keep `bexio_write` on "Needs approval" in the connector's tool
 permissions: it can issue and send documents and delete records.
@@ -152,7 +147,7 @@ or `docker compose up -d` with a `.env` (chmod 600) next to
 
 The bexio app needs exactly one redirect URI: `<PUBLIC_URL>/oauth/callback`.
 
-Endpoints: `/mcp`, `/mcp/<label>` and `/mcp/<label>/<company-id>` (MCP), `/oauth/*` and
+Endpoints: `/mcp` and `/mcp/<company-name>` (MCP), `/oauth/*` and
 `/.well-known/oauth-authorization-server` (sign-in),
 `/.well-known/oauth-protected-resource[/mcp...]` (also fine for health
 checks).

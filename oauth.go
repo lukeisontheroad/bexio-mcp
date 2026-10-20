@@ -87,8 +87,7 @@ type sealed struct {
 	Nonce     string   `json:"o,omitempty"`
 	Token     string   `json:"t,omitempty"` // bexio access or refresh token
 	ReadOnly  bool     `json:"ro,omitempty"`
-	Company   string   `json:"co,omitempty"` // the bexio company id the connector URL pins
-	Label     string   `json:"l,omitempty"`  // the connector URL's label, to name it on errors
+	Company   string   `json:"co,omitempty"` // slug of the company name the connector URL pins
 }
 
 // authServer is the OAuth authorization server clients see. bexio cannot
@@ -230,14 +229,14 @@ func (s *authServer) authorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid sign-in request. Remove the connector and add it again.", http.StatusBadRequest)
 		return
 	}
-	// A connector URL /mcp/<label>/<company-id> pins the company; clients send
-	// it as the resource (RFC 8707).
-	var label, company string
+	// A connector URL /mcp/<company-name> pins the company; clients send it as
+	// the resource (RFC 8707).
+	company := ""
 	if rest, ok := strings.CutPrefix(q.Get("resource"), s.publicURL+"/mcp/"); ok {
-		label, company, _ = strings.Cut(strings.Trim(rest, "/"), "/")
-		if l, err := url.PathUnescape(label); err == nil {
-			label = l
+		if r, err := url.PathUnescape(rest); err == nil {
+			rest = r
 		}
+		company = slug(rest)
 	}
 	// A cookie per sign-in ties both the consent form and bexio's callback to
 	// this browser: another site can neither submit the form for the user nor
@@ -263,10 +262,9 @@ func (s *authServer) authorize(w http.ResponseWriter, r *http.Request) {
 		"Local":      u.Scheme != "https",
 		"Modules":    modules,
 		"Company":    company,
-		"Label":      label,
 		"Request": s.seal(sealed{
 			Kind: "consent", Exp: time.Now().Add(10 * time.Minute).Unix(), Client: clientHash(q.Get("client_id")),
-			Redirect: redirect, State: q.Get("state"), Challenge: challenge, Nonce: nonce, Company: company, Label: label,
+			Redirect: redirect, State: q.Get("state"), Challenge: challenge, Nonce: nonce, Company: company,
 		}),
 	})
 }
@@ -296,7 +294,7 @@ func (s *authServer) consent(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, s.flowCookie(req.Nonce, 600)) // the bexio login may take a while
 	state := s.seal(sealed{
 		Kind: "state", Exp: time.Now().Add(10 * time.Minute).Unix(), Client: req.Client, Redirect: req.Redirect,
-		State: req.State, Challenge: req.Challenge, Verifier: verifier, Nonce: req.Nonce, ReadOnly: readOnly, Company: req.Company, Label: req.Label,
+		State: req.State, Challenge: req.Challenge, Verifier: verifier, Nonce: req.Nonce, ReadOnly: readOnly, Company: req.Company,
 	})
 	http.Redirect(w, r, bexioAuthURL+"?"+url.Values{
 		"client_id":             {s.clientID},
@@ -337,11 +335,11 @@ func (s *authServer) callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bexio did not finish the sign-in. Start it again from your app.", http.StatusBadRequest)
 		return
 	}
-	if id, name := idTokenCompany(t.IDToken); st.Company != "" && id != st.Company {
+	if name := companyName(t.IDToken); st.Company != "" && slug(name) != st.Company {
 		log.Print("callback: other company than the connector URL pins")
-		http.Error(w, fmt.Sprintf("Wrong bexio company. This connector is for %s, but you picked %s (company ID %s).\n\n"+
+		http.Error(w, fmt.Sprintf("Wrong bexio company. This connector is for %s, but you picked %s.\n\n"+
 			"Start the sign-in again from your app and pick %[1]s at bexio. If %[2]s is the company you want, "+
-			"put company ID %[3]s in the connector URL instead.", st.Label, cmp.Or(name, "another company"), id), http.StatusForbidden)
+			"its connector URL is %[3]s/mcp/%[4]s", st.Company, cmp.Or(name, "another company"), s.publicURL, slug(name)), http.StatusForbidden)
 		return
 	}
 	code := s.seal(sealed{
@@ -454,17 +452,24 @@ func (s *authServer) bexioToken(ctx context.Context, form url.Values) (bexioToke
 	return t, err
 }
 
-// idTokenCompany reads the company claims (company_profile scope) of bexio's
+// companyName reads the company_name claim (company_profile scope) of bexio's
 // id token. It came straight from bexio's token endpoint over TLS, so its
 // signature needs no check (OIDC Core 3.1.3.7).
-func idTokenCompany(idToken string) (id, name string) {
+func companyName(idToken string) string {
 	var claims struct {
-		ID   json.RawMessage `json:"company_id"`
-		Name string          `json:"company_name"`
+		CompanyName string `json:"company_name"`
 	}
 	payload, _ := base64.RawURLEncoding.DecodeString(strings.Split(idToken+"..", ".")[1])
 	json.Unmarshal(payload, &claims)
-	return strings.Trim(string(claims.ID), `"`), claims.Name // the id may be a string or a number
+	return claims.CompanyName
+}
+
+// slug turns a company name into its connector URL label: lower case letters
+// and digits, anything else one "-" ("Acme Group, AG" is "acme-group-ag").
+func slug(name string) string {
+	return strings.Join(strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}), "-")
 }
 
 func clientHash(clientID string) string {
@@ -554,7 +559,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outl
 <div class="badge"><img src="{{.BadgeLogo}}" alt=""></div>
 <p><strong>{{or .Name "An application"}}</strong> wants to connect to your bexio account.<br>Choose what it may use.</p>
 <p class="target">Afterwards you will be sent back to <span>{{.Target}}</span></p>
-{{if .Company}}<p class="target">This connector is for <span>{{.Label}}</span>: pick that company at bexio.</p>{{end}}
+{{if .Company}}<p class="target">This connector is for <span>{{.Company}}</span>: pick that company at bexio.</p>{{end}}
 {{if .Local}}<p class="warn">That address opens a program on your own computer. Only continue if you just started this sign-in yourself.</p>{{end}}
 </div>
 <form method="post">
