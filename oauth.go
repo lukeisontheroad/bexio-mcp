@@ -11,7 +11,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -20,6 +19,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 // bexio's Keycloak; tests point them at a fake.
@@ -33,35 +33,68 @@ var (
 const baseScopes = "openid profile email offline_access company_profile"
 
 type module struct {
-	Name, Label, Scopes string
-	Tags                []string // bexio_docs groups, and document types of positions and comments
-	ReadOnly            bool     // nothing to change
+	Section, Tag, Scopes string // consent-page heading, bexio_docs group, the scopes its operations need
+	Doc                  string // document type whose positions and comments belong here
 }
 
-// modules are the areas offered on the consent page, each off, read or read
-// and write. The server enforces that per operation: bexio has no read scope
-// for accounting, files or stock, and master data needs no scope at all.
-// Banking payments and payroll are deliberately absent, so no client can move
-// money or read salary data. One unknown scope makes bexio reject the whole
-// sign-in: only add verified scope names.
+// Name is the module's form field and key in sealed access maps.
+func (m module) Name() string { return slug(m.Tag) }
+
+// Writable reports whether bexio has operations that change this group.
+func (m module) Writable() bool {
+	return slices.ContainsFunc(bexioAPI.byTag[m.Tag], func(o *operation) bool { return !o.readOnly() })
+}
+
+// modules are the rows of the consent page, one per bexio_docs group, each
+// off, read or read and write. The server enforces that per operation: bexio
+// has no read scope for accounting, files or stock, and master data needs no
+// scope at all. Banking payments and payroll are deliberately absent, so no
+// client can move money or read salary data. One unknown scope makes bexio
+// reject the whole sign-in: only add verified scope names.
 var modules = []module{
-	{"contacts", "Contacts", "contact_show contact_edit", []string{"Contacts", "Additional Addresses", "Contact Relations"}, false},
-	{"quotes", "Quotes", "kb_offer_show kb_offer_edit", []string{"Quotes", "kb_offer"}, false},
-	{"orders", "Orders", "kb_order_show kb_order_edit", []string{"Orders", "kb_order"}, false},
-	{"invoices", "Invoices", "kb_invoice_show kb_invoice_edit", []string{"Invoices", "kb_invoice"}, false},
-	{"items", "Items, stock and deliveries", "article_show article_edit stock_edit kb_delivery_show kb_delivery_edit",
-		[]string{"Items", "Deliveries", "Stock Areas", "Stock locations"}, false},
-	{"projects", "Projects and time tracking", "project_show project_edit monitoring_show monitoring_edit", []string{"Projects", "Timesheets"}, false},
-	{"notes-tasks", "Notes and tasks", "note_show note_edit task_show task_edit", []string{"Notes", "Tasks"}, false},
-	{"purchase", "Purchase: bills, expenses, purchase orders", "contact_show kb_bill_show kb_expense_show kb_article_order_show kb_article_order_edit",
-		[]string{"Bills", "Expenses", "Purchase Orders"}, false},
-	{"accounting", "Accounting", "accounting",
-		[]string{"Accounts", "Account Groups", "Business Years", "Calendar Years", "Manual Entries", "Reports", "Vat Periods"}, false},
-	{"files", "Files", "file", []string{"Files"}, false},
-	{"master-data", "Master data: units, taxes, currencies, payment types, ...", "", []string{"Business Activities", "Communication Types",
-		"Company Profile", "Contact Groups", "Contact Sectors", "Countries", "Currencies", "Document Settings", "Document templates",
-		"Languages", "Payment Types", "Permissions", "Salutations", "Taxes", "Titles", "Units", "User Management"}, false},
-	{"bank-accounts", "Bank accounts", "bank_account_show", []string{"Bank Accounts"}, true},
+	{"Contacts", "Contacts", "contact_show contact_edit", ""},
+	{"Contacts", "Additional Addresses", "contact_show contact_edit", ""},
+	{"Contacts", "Contact Relations", "contact_show contact_edit", ""},
+	{"Sales", "Quotes", "kb_offer_show kb_offer_edit", "kb_offer"},
+	{"Sales", "Orders", "kb_order_show kb_order_edit", "kb_order"},
+	{"Sales", "Invoices", "kb_invoice_show kb_invoice_edit", "kb_invoice"},
+	{"Sales", "Deliveries", "kb_delivery_show kb_delivery_edit", ""},
+	{"Items and stock", "Items", "article_show article_edit", ""},
+	{"Items and stock", "Stock Areas", "stock_edit", ""},
+	{"Items and stock", "Stock locations", "stock_edit", ""},
+	{"Purchase", "Bills", "contact_show kb_bill_show", ""},
+	{"Purchase", "Expenses", "contact_show kb_expense_show", ""},
+	{"Purchase", "Purchase Orders", "kb_article_order_show kb_article_order_edit", ""},
+	{"Projects", "Projects", "project_show project_edit", ""},
+	{"Projects", "Timesheets", "monitoring_show monitoring_edit", ""},
+	{"Notes, tasks and files", "Notes", "note_show note_edit", ""},
+	{"Notes, tasks and files", "Tasks", "task_show task_edit", ""},
+	{"Notes, tasks and files", "Files", "file", ""},
+	{"Accounting", "Accounts", "accounting", ""},
+	{"Accounting", "Account Groups", "accounting", ""},
+	{"Accounting", "Business Years", "accounting", ""},
+	{"Accounting", "Calendar Years", "accounting", ""},
+	{"Accounting", "Manual Entries", "accounting", ""},
+	{"Accounting", "Reports", "accounting", ""},
+	{"Accounting", "Vat Periods", "accounting", ""},
+	{"Accounting", "Bank Accounts", "bank_account_show", ""},
+	{"Master data", "Business Activities", "", ""},
+	{"Master data", "Communication Types", "", ""},
+	{"Master data", "Company Profile", "", ""},
+	{"Master data", "Contact Groups", "", ""},
+	{"Master data", "Contact Sectors", "", ""},
+	{"Master data", "Countries", "", ""},
+	{"Master data", "Currencies", "", ""},
+	{"Master data", "Document Settings", "", ""},
+	{"Master data", "Document templates", "", ""},
+	{"Master data", "Languages", "", ""},
+	{"Master data", "Payment Types", "", ""},
+	{"Master data", "Permissions", "", ""},
+	{"Master data", "Salutations", "", ""},
+	{"Master data", "Taxes", "", ""},
+	{"Master data", "Titles", "", ""},
+	{"Master data", "Units", "", ""},
+	{"Master data", "User Management", "", ""},
 }
 
 // scopesFor turns each area's access into bexio scopes: read drops the
@@ -69,7 +102,7 @@ var modules = []module{
 func scopesFor(access map[string]bool) string {
 	scopes := strings.Fields(baseScopes)
 	for _, m := range modules {
-		write, ok := access[m.Name]
+		write, ok := access[m.Name()]
 		for _, s := range strings.Fields(m.Scopes) {
 			// stock_edit is the only scope that reads stock, so it stays.
 			if ok && !slices.Contains(scopes, s) && (write || !strings.HasSuffix(s, "_edit") || s == "stock_edit") {
@@ -236,7 +269,7 @@ func (s *authServer) authorize(w http.ResponseWriter, r *http.Request) {
 	redirect, challenge := q.Get("redirect_uri"), q.Get("code_challenge")
 	if !ok || !redirectAllowed(redirect) || !redirectRegistered(client.URIs, redirect) || q.Get("response_type") != "code" ||
 		q.Get("code_challenge_method") != "S256" || len(challenge) != 43 || len(q.Get("state")) > 512 || len(q.Get("resource")) > 512 {
-		http.Error(w, "Invalid sign-in request. Remove the connector and add it again.", http.StatusBadRequest)
+		message(w, http.StatusBadRequest, "Invalid sign-in request", "Remove the connector and add it again.")
 		return
 	}
 	// A connector URL /mcp/<company-name> pins the company; clients send it as
@@ -255,23 +288,16 @@ func (s *authServer) authorize(w http.ResponseWriter, r *http.Request) {
 	nonce := randomString()
 	http.SetCookie(w, s.flowCookie(nonce, 600))
 	u, _ := url.Parse(redirect)
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; frame-ancestors 'none'")
-	w.Header().Set("X-Frame-Options", "DENY")
-	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("Cache-Control", "no-store")
 	target := u.Host
 	if u.Scheme != "https" {
 		target = u.Scheme + "://" + u.Host
 	}
-	consentPage.Execute(w, map[string]any{
-		"Version":    version,
-		"HeaderLogo": headerLogo,
-		"BadgeLogo":  badgeLogo,
-		"Name":       client.Name,
-		"Target":     target,
-		"Local":      u.Scheme != "https",
-		"Modules":    modules,
-		"Company":    company,
+	render(w, http.StatusOK, "consent", map[string]any{
+		"Name":    client.Name,
+		"Target":  target,
+		"Local":   u.Scheme != "https",
+		"Modules": modules,
+		"Company": companyTitle(company),
 		"Request": s.seal(sealed{
 			Kind: "consent", Exp: time.Now().Add(10 * time.Minute).Unix(), Client: clientHash(q.Get("client_id")),
 			Redirect: redirect, State: q.Get("state"), Challenge: challenge, Nonce: nonce, Company: company,
@@ -285,26 +311,26 @@ func (s *authServer) consent(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	req, ok := s.open(r.PostFormValue("request"), "consent")
 	if _, err := r.Cookie(s.flowCookie(req.Nonce, 0).Name); !ok || err != nil {
-		http.Error(w, "This sign-in expired or was not started in this browser. Start it again from your app.", http.StatusForbidden)
+		message(w, http.StatusForbidden, "Sign-in expired", "This sign-in expired or was not started in this browser. Start it again from your app.")
 		return
 	}
 	if r.PostFormValue("action") != "allow" {
 		// No redirect: Cancel must not send anyone to a stranger's URI.
 		http.SetCookie(w, s.flowCookie(req.Nonce, -1))
-		http.Error(w, "Cancelled. You can close this window.", http.StatusOK)
+		message(w, http.StatusOK, "Cancelled", "Nothing was shared. You can close this window.")
 		return
 	}
 	access := map[string]bool{}
 	for _, m := range modules {
-		switch r.PostFormValue(m.Name) {
+		switch r.PostFormValue(m.Name()) {
 		case "write":
-			access[m.Name] = !m.ReadOnly && r.PostFormValue("readonly") == ""
+			access[m.Name()] = m.Writable()
 		case "read":
-			access[m.Name] = false
+			access[m.Name()] = false
 		}
 	}
 	if len(access) == 0 {
-		http.Error(w, "Pick at least one area: go back and try again.", http.StatusBadRequest)
+		message(w, http.StatusBadRequest, "Nothing to share", "Set at least one row to Read: go back and try again.")
 		return
 	}
 	verifier := randomString()
@@ -332,7 +358,7 @@ func (s *authServer) callback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	st, ok := s.open(q.Get("state"), "state")
 	if _, err := r.Cookie(s.flowCookie(st.Nonce, 0).Name); !ok || err != nil {
-		http.Error(w, "This sign-in expired or was not started in this browser. Start it again from your app.", http.StatusBadRequest)
+		message(w, http.StatusBadRequest, "Sign-in expired", "This sign-in expired or was not started in this browser. Start it again from your app.")
 		return
 	}
 	http.SetCookie(w, s.flowCookie(st.Nonce, -1))
@@ -349,14 +375,19 @@ func (s *authServer) callback(w http.ResponseWriter, r *http.Request) {
 		"code_verifier": {st.Verifier}, "redirect_uri": {s.publicURL + "/oauth/callback"}})
 	if err != nil {
 		log.Printf("callback: bexio refused: %v", err)
-		http.Error(w, "bexio did not finish the sign-in. Start it again from your app.", http.StatusBadRequest)
+		message(w, http.StatusBadRequest, "Sign-in not finished", "bexio did not finish the sign-in. Start it again from your app.")
 		return
 	}
-	if name := companyName(t.IDToken); st.Company != "" && slug(name) != st.Company {
+	if name := cmp.Or(companyName(t.IDToken), "another company"); st.Company != "" && !sameCompany(st.Company, name) {
 		log.Print("callback: other company than the connector URL pins")
-		http.Error(w, fmt.Sprintf("Wrong bexio company. This connector is for %s, but you picked %s.\n\n"+
-			"Start the sign-in again from your app and pick %[1]s at bexio. If %[2]s is the company you want, "+
-			"its connector URL is %[3]s/mcp/%[4]s", st.Company, cmp.Or(name, "another company"), s.publicURL, slug(name)), http.StatusForbidden)
+		want := companyTitle(st.Company)
+		render(w, http.StatusForbidden, "message", map[string]any{
+			"Heading": "Wrong bexio company",
+			"Lines": []string{"This connector is for " + want + ", but you picked " + name + " at bexio.",
+				"Start the sign-in again from your app and pick " + want + "."},
+			"Hint": "If " + name + " is the company you want, use this connector URL instead:",
+			"URL":  s.publicURL + "/mcp/" + slug(name),
+		})
 		return
 	}
 	code := s.seal(sealed{
@@ -481,12 +512,31 @@ func companyName(idToken string) string {
 	return claims.CompanyName
 }
 
-// slug turns a company name into its connector URL label: lower case letters
-// and digits, anything else one "-" ("Acme Group, AG" is "acme-group-ag").
+// slug turns a name into a connector URL label or form field name: lower case
+// letters and digits, anything else one "-" ("Acme Group, AG" is "acme-group-ag").
 func slug(name string) string {
 	return strings.Join(strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	}), "-")
+}
+
+// sameCompany compares a connector URL's company with bexio's company name;
+// separators don't matter ("acmeag" is "Acme AG").
+func sameCompany(pin, name string) bool {
+	return strings.ReplaceAll(pin, "-", "") == strings.ReplaceAll(slug(name), "-", "")
+}
+
+var legalForms = map[string]string{"ag": "AG", "sa": "SA", "kg": "KG", "gmbh": "GmbH"}
+
+// companyTitle turns a company slug back into a name for people: "acme-ag" is
+// "Acme AG". The URL has no capitals, so this is a best guess.
+func companyTitle(pin string) string {
+	words := strings.FieldsFunc(pin, func(r rune) bool { return r == '-' })
+	for i, w := range words {
+		r, n := utf8.DecodeRuneInString(w)
+		words[i] = cmp.Or(legalForms[w], string(unicode.ToUpper(r))+w[n:])
+	}
+	return strings.Join(words, " ")
 }
 
 func clientHash(clientID string) string {
@@ -529,14 +579,32 @@ func logo(outline string) template.URL {
 
 var headerLogo, badgeLogo = logo("#c5d0d3"), logo("#0d2f3b")
 
-// consentPage follows the look of bexio's own sign-in pages (light card,
-// dark header, round badge, list rows) in bextrack's colours.
-var consentPage = template.Must(template.New("consent").Parse(`<!doctype html>
+// render writes one of the pages, which follow the look of bexio's own
+// sign-in pages (light card, dark header, round badge, list rows) in
+// bextrack's colours.
+func render(w http.ResponseWriter, status int, page string, data map[string]any) {
+	h := w.Header()
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; frame-ancestors 'none'")
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	data["Version"], data["HeaderLogo"], data["BadgeLogo"] = version, headerLogo, badgeLogo
+	pages.ExecuteTemplate(w, page, data)
+}
+
+// message shows a page that ends the sign-in here.
+func message(w http.ResponseWriter, status int, heading string, lines ...string) {
+	render(w, status, "message", map[string]any{"Heading": heading, "Lines": lines})
+}
+
+var pages = template.Must(template.New("").Parse(`{{define "top"}}<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Connect bexio</title>
+<title>{{or .Heading "Connect bexio"}}</title>
 <style>
 :root { color-scheme: light; --page: #f4f4f4; --card: #fff; --head: #0d2e3a; --head-fg: #c5d0d3; --intro: #ebebea;
   --teal: #34606c; --teal-dark: #0d2f3b; --lime: #bcdd37; --fg: #1f1f1f; --muted: #6b6b6b; --line: #e6e6e6; --warn: #fff4d6; }
@@ -551,15 +619,13 @@ header span { font-size: 13px; letter-spacing: 1px; padding-top: 6px; }
 .badge { width: 128px; height: 128px; margin: 0 auto 24px; border-radius: 50%; background: var(--teal); color: var(--lime);
   display: flex; align-items: center; justify-content: center; }
 .badge img { width: 76px; }
+.intro h1 { margin: 0 0 12px; font-size: 20px; }
 .intro p { margin: 0 0 8px; }
 .target { color: var(--muted); font-size: 13px; }
 .target span { font-family: ui-monospace, Menlo, monospace; color: var(--fg); word-break: break-all; }
 .warn { background: var(--warn); border-radius: 3px; padding: 8px 12px; margin-top: 12px; font-size: 13px; }
 .section { padding: 14px 24px 6px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
-.row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 11px 24px; border-top: 1px solid var(--line); }
-label.row { flex-wrap: nowrap; cursor: pointer; }
-label.row:hover { background: #fafafa; }
-.row small { display: block; color: var(--muted); font-size: 13px; }
+.row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 8px 24px; border-top: 1px solid var(--line); }
 .seg { display: flex; flex: none; margin-left: auto; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; font-size: 13px; }
 .seg label { position: relative; cursor: pointer; }
 .seg label + label { border-left: 1px solid var(--line); }
@@ -567,15 +633,14 @@ label.row:hover { background: #fafafa; }
 .seg span { display: block; padding: 5px 10px; }
 .seg input:checked + span { background: var(--teal); color: #fff; }
 .seg input:focus-visible + span { outline: 2px solid var(--teal-dark); outline-offset: -2px; }
-.md-warn { display: none; margin: 0 24px 11px; }
-form:has(input[name=master-data][value=off]:checked) .md-warn { display: block; }
-input[type=checkbox] { width: 18px; height: 18px; flex: none; accent-color: var(--teal); }
+.md-warn { display: none; margin: 0 24px 10px; }
+form:has(.md input[value=off]:checked) .md-warn { display: block; }
 .actions { display: flex; flex-direction: row-reverse; align-items: center; gap: 8px; padding: 18px 24px; border-top: 1px solid var(--line); }
 button { font: inherit; border: 0; border-radius: 3px; padding: 10px 18px; cursor: pointer; }
 button[value=allow] { background: var(--teal); color: #fff; font-weight: 700; }
 button[value=allow]:hover { background: var(--teal-dark); }
 button[value=deny] { background: transparent; color: var(--muted); }
-button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+button:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .note { max-width: 480px; margin: 12px auto 0; text-align: center; color: var(--muted); font-size: 12px; }
 .note strong, .note a { color: var(--fg); }
 </style>
@@ -585,28 +650,37 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outl
 <header><img src="{{.HeaderLogo}}" alt="">BexTrack<span>MCP</span></header>
 <div class="intro">
 <div class="badge"><img src="{{.BadgeLogo}}" alt=""></div>
-<p><strong>{{or .Name "An application"}}</strong> wants to connect to your bexio account.<br>Choose what it may use.</p>
+{{end}}
+
+{{define "bottom"}}</div>
+<p class="note">Bank payments and payroll are never available through this connector.<br>
+<strong>Use this connector at your own risk.</strong> It is provided as is, without warranty or liability.<br>
+BexTrackMCP {{.Version}} · <a href="https://github.com/lukeisontheroad/bexio-mcp" target="_blank" rel="noopener">Source code on GitHub</a></p>
+</body>
+</html>
+{{end}}
+
+{{define "message"}}{{template "top" .}}<h1>{{.Heading}}</h1>
+{{range .Lines}}<p>{{.}}</p>
+{{end}}{{if .URL}}<p class="target">{{.Hint}}<br><span>{{.URL}}</span></p>
+{{end}}</div>
+{{template "bottom" .}}{{end}}
+
+{{define "consent"}}{{template "top" .}}<p><strong>{{or .Name "An application"}}</strong> wants to connect to your bexio account.<br>Choose what it may use.</p>
 <p class="target">Afterwards you will be sent back to <span>{{.Target}}</span></p>
 {{if .Company}}<p class="target">This connector is for <span>{{.Company}}</span>: pick that company at bexio.</p>{{end}}
 {{if .Local}}<p class="warn">That address opens a program on your own computer. Only continue if you just started this sign-in yourself.</p>{{end}}
 </div>
 <form method="post">
 <input type="hidden" name="request" value="{{.Request}}">
-<div class="section">Areas</div>
-{{range .Modules}}<div class="row"><span>{{.Label}}</span><span class="seg" role="radiogroup" aria-label="{{.Label}}">
+{{$section := ""}}{{range .Modules}}{{if ne .Section $section}}{{$section = .Section}}<div class="section">{{.Section}}</div>
+{{if eq .Section "Master data"}}<p class="warn md-warn">Contacts, invoices and other records refer to master data: with some of it off, creating them may fail.</p>
+{{end}}{{end}}<div class="row{{if eq .Section "Master data"}} md{{end}}"><span>{{.Tag}}</span><span class="seg" role="radiogroup" aria-label="{{.Tag}}">
 <label><input type="radio" name="{{.Name}}" value="off"><span>Off</span></label>
-<label><input type="radio" name="{{.Name}}" value="read"{{if .ReadOnly}} checked{{end}}><span>Read</span></label>
-{{if not .ReadOnly}}<label><input type="radio" name="{{.Name}}" value="write" checked><span>Read &amp; write</span></label>{{end}}
+<label><input type="radio" name="{{.Name}}" value="read"{{if not .Writable}} checked{{end}}><span>Read</span></label>
+{{if .Writable}}<label><input type="radio" name="{{.Name}}" value="write" checked><span>Read &amp; write</span></label>{{end}}
 </span></div>
-{{if eq .Name "master-data"}}<p class="warn md-warn">Without master data, creating invoices, contacts and other records may fail: they refer to the signed-in user, units, taxes, currencies and payment types.</p>
-{{end}}{{end}}<div class="section">Access</div>
-<label class="row"><span>Read only<small>Can look things up, never changes anything, whatever is set above</small></span><input type="checkbox" name="readonly" value="1"></label>
-<div class="actions"><button name="action" value="allow">Continue to bexio</button><button name="action" value="deny">Cancel</button></div>
+{{end}}<div class="actions"><button name="action" value="allow">Continue to bexio</button><button name="action" value="deny">Cancel</button></div>
 </form>
 </div>
-<p class="note">Bank payments and payroll are never available through this connector.<br>
-<strong>Use this connector at your own risk.</strong> It is provided as is, without warranty or liability.<br>
-BexTrackMCP {{.Version}} · <a href="https://github.com/lukeisontheroad/bexio-mcp" target="_blank" rel="noopener">Source code on GitHub</a></p>
-</body>
-</html>
-`))
+{{template "bottom" .}}{{end}}`))

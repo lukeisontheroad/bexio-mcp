@@ -106,7 +106,7 @@ func TestServer(t *testing.T) {
 
 	all := map[string]bool{}
 	for _, m := range modules {
-		all[m.Name] = !m.ReadOnly
+		all[m.Name()] = m.Writable()
 	}
 	token := auth.seal(sealed{Kind: "access", Exp: time.Now().Add(time.Hour).Unix(), Token: "bexio-access", Access: all})
 	session := connect(t, srv.URL+"/mcp/acme", token)
@@ -254,12 +254,12 @@ func TestSignIn(t *testing.T) {
 	page, _ := io.ReadAll(resp.Body)
 	request := regexp.MustCompile(`name="request" value="([\w-]+)"`).FindSubmatch(page)
 	cookies := resp.Cookies()
-	if resp.StatusCode != 200 || request == nil || len(cookies) != 1 || strings.Contains(string(page), "<b>") || !strings.Contains(string(page), "This connector is for <span>acme-ag</span>") ||
+	if resp.StatusCode != 200 || request == nil || len(cookies) != 1 || strings.Contains(string(page), "<b>") || !strings.Contains(string(page), "This connector is for <span>Acme AG</span>") ||
 		!strings.Contains(string(page), `name="contacts" value="write" checked`) {
 		t.Fatalf("consent page: %d %d cookies\n%s", resp.StatusCode, len(cookies), page)
 	}
 	consent := func(withCookie bool, action string) *http.Response {
-		form := url.Values{"request": {string(request[1])}, "contacts": {"write"}, "readonly": {"1"}, "action": {action}}
+		form := url.Values{"request": {string(request[1])}, "contacts": {"read"}, "action": {action}}
 		req, _ := http.NewRequest("POST", srv.URL+"/oauth/authorize", strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		if withCookie {
@@ -304,7 +304,7 @@ func TestSignIn(t *testing.T) {
 	fake.company = "Acme Group AG"
 	if resp := callback(true); resp.StatusCode != 403 || resp.Header.Get("Location") != "" {
 		t.Fatalf("other company: %d %q", resp.StatusCode, resp.Header.Get("Location"))
-	} else if page, _ := io.ReadAll(resp.Body); !strings.Contains(string(page), "This connector is for acme-ag, but you picked Acme Group AG") ||
+	} else if page, _ := io.ReadAll(resp.Body); !strings.Contains(string(page), "This connector is for Acme AG, but you picked Acme Group AG at bexio.") ||
 		!strings.Contains(string(page), publicURL+"/mcp/acme-group-ag") {
 		t.Fatalf("other company page: %s", page)
 	}
@@ -369,12 +369,24 @@ func TestScopes(t *testing.T) {
 	base := "openid profile email offline_access company_profile "
 	for want, access := range map[string]map[string]bool{
 		"contact_show contact_edit kb_invoice_show": {"contacts": true, "invoices": false},
-		"article_show stock_edit kb_delivery_show":  {"items": false},
-		"": {"master-data": true},
+		"kb_delivery_show article_show stock_edit":  {"items": false, "stock-areas": false, "deliveries": false},
+		"": {"units": true},
 	} {
 		if got := scopesFor(access); got != strings.TrimSpace(base+want) {
 			t.Errorf("scopesFor(%v) = %q", access, got)
 		}
+	}
+}
+
+func TestCompany(t *testing.T) {
+	if !sameCompany("acmeag", "Acme AG") || !sameCompany("acme-ag", "ACME ag") || sameCompany("acme-ag", "Acme Group AG") {
+		t.Error("sameCompany")
+	}
+	if got := companyTitle("acme-group-gmbh"); got != "Acme Group GmbH" {
+		t.Errorf("companyTitle = %q", got)
+	}
+	if companyTitle("") != "" {
+		t.Error("companyTitle of nothing")
 	}
 }
 
@@ -408,8 +420,8 @@ func TestDocs(t *testing.T) {
 		t.Fatal("bank payments are documented")
 	}
 	for id, op := range a.ops {
-		if op.area(callInput{PathParams: map[string]any{"kb_document_type": "kb_offer"}}).Name == "" {
-			t.Errorf("%s (%s) is in no consent-page area", id, op.Tag)
+		if op.area(callInput{PathParams: map[string]any{"kb_document_type": "kb_offer"}}).Tag == "" {
+			t.Errorf("%s (%s) is in no consent-page row", id, op.Tag)
 		}
 	}
 	doc, _ := a.doc("v2ShowContact")

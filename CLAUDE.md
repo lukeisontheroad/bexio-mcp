@@ -73,9 +73,9 @@ setting `IMAGE` to the new version's tag and
   bexio access. Redirect URIs are validated before anything redirects.
 - Bank payments and payroll stay excluded (`servable` in spec.go, absent
   from `modules`): a chat connector must not move money or read salary data.
-- `modules` (oauth.go) maps consent-page areas to OAuth scopes and to the
-  `bexio_docs` groups the server enforces per call; every operation must
-  belong to an area (TestDocs). One scope bexio doesn't know makes it reject
+- `modules` (oauth.go) are the consent-page rows, one per `bexio_docs`
+  group, with the OAuth scopes they need; the server enforces them per call
+  and every operation must belong to a row (TestDocs). One scope bexio doesn't know makes it reject
   the whole sign-in (e.g. `general` is documented but not requestable). Add
   only verified names.
 - bexio tokens are bound to one company. Several companies means several

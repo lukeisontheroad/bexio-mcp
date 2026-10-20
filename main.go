@@ -74,7 +74,7 @@ func main() {
 type accessKey struct{}
 
 func newHandler(auth *authServer) http.Handler {
-	a := loadAPI()
+	a := bexioAPI
 	servers := map[bool]*mcp.Server{false: newServer(a, false), true: newServer(a, true)}
 	mcpHandler := requireBearer(mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		access, _ := r.Context().Value(accessKey{}).(map[string]bool)
@@ -205,16 +205,16 @@ func (a *api) caller(readOnly bool) mcp.ToolHandlerFor[callInput, any] {
 			return nil, nil, fmt.Errorf("%s changes data: it needs bexio_write, which read-only connectors don't have", op.ID)
 		}
 		area := op.area(in)
-		if area.Name == "" {
+		if area.Tag == "" {
 			return nil, nil, fmt.Errorf("%s needs kb_document_type kb_offer, kb_order or kb_invoice", op.ID)
 		}
 		access, _ := ctx.Value(accessKey{}).(map[string]bool)
-		write, granted := access[area.Name]
+		write, granted := access[area.Name()]
 		if !granted {
-			return nil, nil, fmt.Errorf("%s is in %q, which this connector was not granted at sign-in", op.ID, area.Label)
+			return nil, nil, fmt.Errorf("%s is in %q, which this connector was not granted at sign-in", op.ID, area.Tag)
 		}
 		if !write && !op.readOnly() {
-			return nil, nil, fmt.Errorf("%s changes data, but %q is read only for this connector", op.ID, area.Label)
+			return nil, nil, fmt.Errorf("%s changes data, but %q is read only for this connector", op.ID, area.Tag)
 		}
 		text, err := call(ctx, req.Extra.Header.Get("Authorization"), op, in)
 		return textResult(text), nil, err
