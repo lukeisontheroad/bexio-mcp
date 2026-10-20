@@ -13,12 +13,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"log"
 	"maps"
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -64,7 +66,7 @@ func main() {
 		log.Print("sentry enabled")
 	}
 	srv := &http.Server{
-		Addr: addr, Handler: handler,
+		Addr: addr, Handler: pageOnPanic(handler),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
 		WriteTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute, // bexio calls time out after 1 minute
 	}
@@ -74,7 +76,7 @@ func main() {
 type accessKey struct{}
 
 func newHandler(auth *authServer) http.Handler {
-	a := loadAPI()
+	a := bexioAPI
 	servers := map[bool]*mcp.Server{false: newServer(a, false), true: newServer(a, true)}
 	mcpHandler := requireBearer(mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		access, _ := r.Context().Value(accessKey{}).(map[string]bool)
@@ -95,12 +97,33 @@ func newHandler(auth *authServer) http.Handler {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		showError(w, http.StatusNotFound, page{Heading: "Page not found", Lines: []template.HTML{"There is nothing to see at this address."},
+			Hint: "To use BexTrackMCP, add this URL as a connector in your app:", URL: auth.publicURL + "/mcp"})
+	})
 	mux.Handle("/mcp", mcpHandler)
 	mux.Handle("/mcp/", mcpHandler)
 	mux.HandleFunc("GET "+prmPath, metadata)
 	mux.HandleFunc("GET "+prmPath+"/", metadata)
 	auth.routes(mux)
 	return mux
+}
+
+// pageOnPanic answers a crash with the error page instead of a dropped
+// connection. Sentry, inside it, has already reported the panic.
+func pageOnPanic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if v := recover(); v != nil {
+				if v == http.ErrAbortHandler { // a deliberate, quiet abort
+					panic(v)
+				}
+				log.Printf("%s %s panic: %v\n%s", r.Method, r.URL.Path, v, debug.Stack())
+				showError(w, http.StatusInternalServerError, page{Heading: "Something went wrong", Lines: []template.HTML{"Please try again in a moment."}})
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // scrubEvent keeps what identifies a fault (method, path, message, stack)
@@ -141,6 +164,11 @@ func requireBearer(next http.Handler, auth *authServer) http.Handler {
 		if !ok || !strings.EqualFold(scheme, "Bearer") {
 			log.Printf("%s %s 401 (bearer sent: %t) %q", r.Method, r.URL.Path, token != "", r.UserAgent())
 			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata=%q`, auth.publicURL+prmPath+r.URL.Path))
+			if strings.Contains(r.Header.Get("Accept"), "text/html") { // a person opened the connector URL
+				showError(w, http.StatusUnauthorized, page{Heading: "This is a connector URL", Lines: []template.HTML{"It works in an app like Claude, not in the browser."},
+					Hint: "Add it as a connector in your app:", URL: auth.publicURL + r.URL.EscapedPath()})
+				return
+			}
 			http.Error(w, "sign in to bexio", http.StatusUnauthorized)
 			return
 		}
@@ -205,16 +233,16 @@ func (a *api) caller(readOnly bool) mcp.ToolHandlerFor[callInput, any] {
 			return nil, nil, fmt.Errorf("%s changes data: it needs bexio_write, which read-only connectors don't have", op.ID)
 		}
 		area := op.area(in)
-		if area.Name == "" {
+		if area.Tag == "" {
 			return nil, nil, fmt.Errorf("%s needs kb_document_type kb_offer, kb_order or kb_invoice", op.ID)
 		}
 		access, _ := ctx.Value(accessKey{}).(map[string]bool)
-		write, granted := access[area.Name]
+		write, granted := access[area.Name()]
 		if !granted {
-			return nil, nil, fmt.Errorf("%s is in %q, which this connector was not granted at sign-in", op.ID, area.Label)
+			return nil, nil, fmt.Errorf("%s is in %q, which this connector was not granted at sign-in", op.ID, area.Tag)
 		}
 		if !write && !op.readOnly() {
-			return nil, nil, fmt.Errorf("%s changes data, but %q is read only for this connector", op.ID, area.Label)
+			return nil, nil, fmt.Errorf("%s changes data, but %q is read only for this connector", op.ID, area.Tag)
 		}
 		text, err := call(ctx, req.Extra.Header.Get("Authorization"), op, in)
 		return textResult(text), nil, err

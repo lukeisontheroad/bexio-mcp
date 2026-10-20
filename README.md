@@ -43,41 +43,42 @@ downloads, file uploads.
 1. The client registers itself with the server automatically (OAuth dynamic
    client registration); nobody enters a client ID or secret.
 2. A consent page shows which application asks and where it will be sent
-   back, and lets the user set each area to Off, Read or Read & write (the
-   default), or everything to read only.
+   back, and lists every kind of bexio record on its own row, each Off, Read
+   or Read & write (the default where bexio can change it).
 3. The user signs in at bexio and picks the company. If the connector URL
    names a company (see below), any other one is refused.
 4. The client receives a token that only works through this server.
 
-| Area on the consent page   | bexio scopes                                        |
-|----------------------------|-----------------------------------------------------|
-| Contacts                   | `contact_show`, `contact_edit`                      |
-| Quotes                     | `kb_offer_show`, `kb_offer_edit`                    |
-| Orders                     | `kb_order_show`, `kb_order_edit`                    |
-| Invoices                   | `kb_invoice_show`, `kb_invoice_edit`                |
-| Items, stock, deliveries   | `article_*`, `stock_edit`, `kb_delivery_*`          |
-| Projects and time tracking | `project_*`, `monitoring_*`                         |
-| Notes and tasks            | `note_*`, `task_*`                                  |
-| Purchase                   | bills, expenses, purchase orders                    |
-| Accounting                 | `accounting`                                        |
-| Files                      | `file`                                              |
-| Master data                | none: units, taxes, currencies, payment types, ...  |
-| Bank accounts              | `bank_account_show` (Off or Read only)              |
+| Section on the consent page | Rows                                                       | bexio scopes                                    |
+|-----------------------------|------------------------------------------------------------|-------------------------------------------------|
+| Contacts                    | Contacts, Additional Addresses, Contact Relations          | `contact_*`                                     |
+| Sales                       | Quotes, Orders, Invoices, Deliveries                       | `kb_offer_*`, `kb_order_*`, `kb_invoice_*`, `kb_delivery_*` |
+| Items and stock             | Items, Stock Areas, Stock locations                        | `article_*`, `stock_edit`                       |
+| Purchase                    | Bills, Expenses, Purchase Orders                           | `kb_bill_show`, `kb_expense_show`, `kb_article_order_*`, `contact_show` |
+| Projects                    | Projects, Timesheets                                       | `project_*`, `monitoring_*`                     |
+| Notes, tasks and files      | Notes, Tasks, Files                                        | `note_*`, `task_*`, `file`                      |
+| Accounting                  | Accounts, Account Groups, Business and Calendar Years, Manual Entries, Reports, Vat Periods, Bank Accounts | `accounting`, `bank_account_show` |
+| Master data                 | Units, Taxes, Currencies, Payment Types, Countries, Languages and 11 more | none                             |
 
-The server enforces each area itself, on every call: **Off** refuses the
-area's operations, **Read** refuses those that change data and drops the
-area's `_edit` scopes. That also covers accounting, files, stock and master
-data, where bexio has no separate read scope or no scope at all. Turning
-master data off shows a warning: records like invoices and contacts refer to
-the signed-in user, units, taxes and currencies. Converting a document (quote to order or
-invoice, order to delivery) needs both areas on Read & write. **Read only**
-sets every area to Read and removes the `bexio_write` tool.
+The rows are the groups `bexio_docs` shows (positions and comments follow
+their quote, order or invoice), so the assistant sees the same names. The
+server enforces each row itself, on every call: **Off** refuses its
+operations, **Read** refuses those that change data and drops its `_edit`
+scopes unless a row on Read & write shares them. That also covers accounting, files, stock and master data,
+where bexio has no separate read scope or no scope at all. Rows bexio cannot
+change offer only Off and Read. Turning any master data off shows a warning:
+records like invoices and contacts refer to it. Converting a document (quote
+to order or invoice, order to delivery) needs both rows on Read & write. With
+nothing on Read & write, the `bexio_write` tool is gone.
+
+Errors people see in the browser (sign-in errors, unknown addresses, a
+connector URL opened directly, crashes) share the consent page's design.
 
 **Several companies:** a bexio token belongs to one company. Add one
 connector per company, with the company's name in the URL, e.g.
 `/mcp/acme-ag` for "Acme AG" and `/mcp/acme-group-ag` for "Acme Group AG".
-Case, spaces and punctuation don't matter, but the whole name must match:
-`/mcp/acme` is neither. A sign-in to another company is refused with a page
+Case, spaces and punctuation don't matter (`/mcp/acmeag` works too), but
+the whole name must match: `/mcp/acme` is neither. A sign-in to another company is refused with a page
 naming the company picked and its connector URL, so a misspelt name shows
 the right one. Plain `/mcp` accepts whichever company is picked.
 

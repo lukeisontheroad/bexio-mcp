@@ -29,18 +29,13 @@ func (o *operation) readOnly() bool {
 	return o.Method == "GET" || strings.HasSuffix(o.Path, "/search")
 }
 
-// area is the consent-page area of a call: by its group, or for document
+// area is the consent-page row of a call: by its group, or for document
 // positions and comments by the document type.
 func (o *operation) area(in callInput) module {
-	tag := o.Tag
-	if strings.HasPrefix(o.Path, "/2.0/{kb_document_type}") {
-		tag = "" // a document type, never a group name
-		if t := param(in.PathParams["kb_document_type"]); strings.HasPrefix(t, "kb_") {
-			tag = t
-		}
-	}
+	doc := strings.HasPrefix(o.Path, "/2.0/{kb_document_type}")
+	kind := param(in.PathParams["kb_document_type"])
 	for _, m := range modules {
-		if slices.Contains(m.Tags, tag) {
+		if doc && m.Doc != "" && m.Doc == kind || !doc && m.Tag == o.Tag {
 			return m
 		}
 	}
@@ -52,6 +47,9 @@ type api struct {
 	ops   map[string]*operation
 	byTag map[string][]*operation
 }
+
+// bexioAPI is the embedded spec, parsed once.
+var bexioAPI = loadAPI()
 
 func loadAPI() *api {
 	a := &api{ops: map[string]*operation{}, byTag: map[string][]*operation{}}
