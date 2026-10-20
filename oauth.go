@@ -568,12 +568,27 @@ func oauthError(w http.ResponseWriter, status int, code string) {
 //go:embed bextrack-logo.svg
 var bextrackLogo string
 
-func logo(outline string) template.URL {
-	svg := strings.ReplaceAll(bextrackLogo, "#0d2f3b", outline)
-	return template.URL("data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(svg)))
+// The official store badges, linking to the BexTrack apps.
+var (
+	//go:embed app-store-badge.svg
+	appStoreBadge string
+	//go:embed google-play-badge.png
+	googlePlayBadge string
+)
+
+// dataURL inlines an image: the pages' CSP allows no other source.
+func dataURL(mime, data string) template.URL {
+	return template.URL("data:" + mime + ";base64," + base64.StdEncoding.EncodeToString([]byte(data)))
 }
 
-var headerLogo, badgeLogo = logo("#c5d0d3"), logo("#0d2f3b")
+func logo(outline string) template.URL {
+	return dataURL("image/svg+xml", strings.ReplaceAll(bextrackLogo, "#0d2f3b", outline))
+}
+
+var (
+	headerLogo, badgeLogo = logo("#c5d0d3"), logo("#0d2f3b")
+	appStore, googlePlay  = dataURL("image/svg+xml", appStoreBadge), dataURL("image/png", googlePlayBadge)
+)
 
 // page is what the templates show: the consent page, or the error page that
 // ends a request here (Heading, Lines and an optional URL to use instead).
@@ -585,6 +600,7 @@ type page struct {
 	Modules                        []module
 	Version                        string
 	HeaderLogo, BadgeLogo          template.URL
+	AppStore, GooglePlay           template.URL
 }
 
 var expired = page{Heading: "Sign-in expired", Lines: []string{"This sign-in expired or was not started in this browser. Start it again from your app."}}
@@ -599,7 +615,7 @@ func render(w http.ResponseWriter, status int, name string, p page) {
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	p.Version, p.HeaderLogo, p.BadgeLogo = version, headerLogo, badgeLogo
+	p.Version, p.HeaderLogo, p.BadgeLogo, p.AppStore, p.GooglePlay = version, headerLogo, badgeLogo, appStore, googlePlay
 	pages.ExecuteTemplate(w, name, p)
 }
 
@@ -651,6 +667,9 @@ button[value=deny] { background: transparent; color: var(--muted); }
 button:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .note { max-width: 480px; margin: 12px auto 0; text-align: center; color: var(--muted); font-size: 12px; }
 .note strong, .note a { color: var(--fg); }
+.stores { display: flex; justify-content: center; align-items: center; gap: 4px; margin: 16px auto 0; }
+.stores img { display: block; height: 40px; }
+.stores .play { height: 59px; margin: -10px -9px; } /* Google's badge carries its own clear space */
 </style>
 </head>
 <body>
@@ -664,6 +683,9 @@ button:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 <p class="note">Bank payments and payroll are never available through this connector.<br>
 <strong>Use this connector at your own risk.</strong> It is provided as is, without warranty or liability.<br>
 BexTrackMCP {{.Version}} · <a href="https://github.com/lukeisontheroad/bexio-mcp" target="_blank" rel="noopener">Source code on GitHub</a></p>
+<p class="note">Track your time in bexio with the BexTrack app:</p>
+<div class="stores"><a href="https://apps.apple.com/app/bextrack/id1534958012" target="_blank" rel="noopener"><img src="{{.AppStore}}" alt="Download BexTrack on the App Store"></a>
+<a href="https://play.google.com/store/apps/details?id=xyz.lukeisontheroad.bexio" target="_blank" rel="noopener"><img class="play" src="{{.GooglePlay}}" alt="Get BexTrack on Google Play"></a></div>
 </body>
 </html>
 {{end}}

@@ -59,6 +59,8 @@ setting `IMAGE` to the new version's tag and
   model mistakes here.
 - `openapi.json`: generated, never hand-edited.
 - `bextrack-logo.svg`: the bextrack app icon, shown on the consent page.
+- `app-store-badge.svg`, `google-play-badge.png`: the official store badges
+  (unmodified), linking to the BexTrack apps in every page's footer.
 - Files embedded with `go:embed` must be in the Dockerfile's `COPY` line
   and allowed in `.dockerignore` (an allowlist), or the image build fails.
 
