@@ -550,6 +550,7 @@ button[value=allow]:hover { background: var(--teal-dark); }
 button[value=deny] { background: transparent; color: var(--muted); }
 button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .note { max-width: 480px; margin: 12px auto 0; text-align: center; color: var(--muted); font-size: 12px; }
+.note strong, .note a { color: var(--fg); }
 </style>
 </head>
 <body>
@@ -572,7 +573,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outl
 </form>
 </div>
 <p class="note">Bank payments and payroll are never available through this connector.<br>
-Provided as is, without warranty or liability. Use at your own risk.<br>BexTrackMCP {{.Version}}</p>
+<strong>Use this connector at your own risk.</strong> It is provided as is, without warranty or liability.<br>
+BexTrackMCP {{.Version}} · <a href="https://github.com/lukeisontheroad/bexio-mcp" target="_blank" rel="noopener">Source code on GitHub</a></p>
 </body>
 </html>
 `))
