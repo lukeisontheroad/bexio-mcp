@@ -104,9 +104,13 @@ func TestServer(t *testing.T) {
 		t.Fatalf("metadata %+v", prm)
 	}
 
-	token := auth.seal(sealed{Kind: "access", Exp: time.Now().Add(time.Hour).Unix(), Token: "bexio-access"})
+	all := map[string]bool{}
+	for _, m := range modules {
+		all[m.Name] = !m.ReadOnly
+	}
+	token := auth.seal(sealed{Kind: "access", Exp: time.Now().Add(time.Hour).Unix(), Token: "bexio-access", Access: all})
 	session := connect(t, srv.URL+"/mcp/acme", token)
-	callTool := func(name string, args map[string]any) *mcp.CallToolResult {
+	callOn := func(session *mcp.ClientSession, name string, args map[string]any) *mcp.CallToolResult {
 		t.Helper()
 		res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
 		if err != nil {
@@ -114,6 +118,7 @@ func TestServer(t *testing.T) {
 		}
 		return res
 	}
+	callTool := func(name string, args map[string]any) *mcp.CallToolResult { return callOn(session, name, args) }
 	text := func(res *mcp.CallToolResult) string { return res.Content[0].(*mcp.TextContent).Text }
 
 	res := callTool("bexio_read", map[string]any{
@@ -144,6 +149,33 @@ func TestServer(t *testing.T) {
 
 	if res := callTool("bexio_docs", map[string]any{}); !strings.Contains(text(res), "Contacts (") || strings.Contains(text(res), "Employees") {
 		t.Fatalf("index: %s", text(res))
+	}
+
+	// Per area: contacts read only, quotes read and write, the rest off.
+	some := connect(t, srv.URL+"/mcp/acme", auth.seal(sealed{Kind: "access", Exp: time.Now().Add(time.Hour).Unix(), Token: "bexio-access",
+		Access: map[string]bool{"contacts": false, "quotes": true}}))
+	position := func(docType string) map[string]any {
+		return map[string]any{"operation": "v2CreateDefaultPosition", "path_params": map[string]any{"kb_document_type": docType, "document_id": 1}}
+	}
+	for name, res := range map[string]*mcp.CallToolResult{
+		"write to a read-only area":       callOn(some, "bexio_write", map[string]any{"operation": "v2DeleteContact", "path_params": map[string]any{"contact_id": 1}}),
+		"read an area that is off":        callOn(some, "bexio_read", map[string]any{"operation": "v2ListInvoices"}),
+		"invoice position, invoices off":  callOn(some, "bexio_write", position("kb_invoice")),
+		"position of an unknown document": callOn(some, "bexio_write", position("contact")),
+		"group name as document type":     callOn(some, "bexio_write", position("Quotes")),
+		"path climbing into another area": callOn(some, "bexio_write", map[string]any{"operation": "v2EditQuote",
+			"path_params": map[string]any{"quote_id": "../../3.0/accounting/manual_entries"}}),
+		"master data off, which needs no scope": callOn(some, "bexio_read", map[string]any{"operation": "v2ListUnits"}),
+	} {
+		if !res.IsError {
+			t.Errorf("%s was forwarded", name)
+		}
+	}
+	if res := callOn(some, "bexio_write", position("kb_offer")); res.IsError || fake.api.URL.Path != "/2.0/kb_offer/1/kb_position_custom" {
+		t.Fatalf("quote position: %s, forwarded %s", text(res), fake.api.URL.Path)
+	}
+	if res := callOn(some, "bexio_read", map[string]any{"operation": "v2ShowContact", "path_params": map[string]any{"contact_id": 2}}); res.IsError {
+		t.Fatalf("read a read-only area: %s", text(res))
 	}
 }
 
@@ -222,11 +254,12 @@ func TestSignIn(t *testing.T) {
 	page, _ := io.ReadAll(resp.Body)
 	request := regexp.MustCompile(`name="request" value="([\w-]+)"`).FindSubmatch(page)
 	cookies := resp.Cookies()
-	if resp.StatusCode != 200 || request == nil || len(cookies) != 1 || strings.Contains(string(page), "<b>") || !strings.Contains(string(page), "This connector is for <span>acme-ag</span>") {
+	if resp.StatusCode != 200 || request == nil || len(cookies) != 1 || strings.Contains(string(page), "<b>") || !strings.Contains(string(page), "This connector is for <span>acme-ag</span>") ||
+		!strings.Contains(string(page), `name="contacts" value="write" checked`) {
 		t.Fatalf("consent page: %d %d cookies\n%s", resp.StatusCode, len(cookies), page)
 	}
 	consent := func(withCookie bool, action string) *http.Response {
-		form := url.Values{"request": {string(request[1])}, "module": {"contacts"}, "readonly": {"1"}, "action": {action}}
+		form := url.Values{"request": {string(request[1])}, "contacts": {"write"}, "readonly": {"1"}, "action": {action}}
 		req, _ := http.NewRequest("POST", srv.URL+"/oauth/authorize", strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		if withCookie {
@@ -321,7 +354,7 @@ func TestSignIn(t *testing.T) {
 	if err != nil || len(tools.Tools) != 2 || slices.ContainsFunc(tools.Tools, func(t *mcp.Tool) bool { return t.Name == "bexio_write" }) {
 		t.Fatalf("read-only tools: %v %v", tools, err)
 	}
-	session.CallTool(context.Background(), &mcp.CallToolParams{Name: "bexio_read", Arguments: map[string]any{"operation": "v3ShowMe"}})
+	session.CallTool(context.Background(), &mcp.CallToolParams{Name: "bexio_read", Arguments: map[string]any{"operation": "v2ShowContact", "path_params": map[string]any{"contact_id": 1}}})
 	if fake.api.Header.Get("Authorization") != "Bearer bexio-access" {
 		t.Fatalf("forwarded %q", fake.api.Header.Get("Authorization"))
 	}
@@ -329,6 +362,19 @@ func TestSignIn(t *testing.T) {
 	status, refreshed := tokenRequest(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {body["refresh_token"].(string)}, "client_id": {reg.ClientID}})
 	if status != 200 || fake.token.Get("refresh_token") != "bexio-refresh" || refreshed["access_token"] == nil {
 		t.Fatalf("refresh: %d %v", status, refreshed)
+	}
+}
+
+func TestScopes(t *testing.T) {
+	base := "openid profile email offline_access company_profile "
+	for want, access := range map[string]map[string]bool{
+		"contact_show contact_edit kb_invoice_show": {"contacts": true, "invoices": false},
+		"article_show stock_edit kb_delivery_show":  {"items": false},
+		"": {"master-data": true},
+	} {
+		if got := scopesFor(access); got != strings.TrimSpace(base+want) {
+			t.Errorf("scopesFor(%v) = %q", access, got)
+		}
 	}
 }
 
@@ -358,8 +404,13 @@ func TestDocs(t *testing.T) {
 			t.Fatalf("%s: %v", id, err)
 		}
 	}
-	if _, err := a.doc("payments"); err == nil {
-		t.Fatal("banking payments are documented")
+	if _, err := a.doc("payments"); err == nil || a.ops["ApiOutgoingPayment_POST"] != nil {
+		t.Fatal("bank payments are documented")
+	}
+	for id, op := range a.ops {
+		if op.area(callInput{PathParams: map[string]any{"kb_document_type": "kb_offer"}}).Name == "" {
+			t.Errorf("%s (%s) is in no consent-page area", id, op.Tag)
+		}
 	}
 	doc, _ := a.doc("v2ShowContact")
 	if !strings.Contains(doc, "contact_id (path, required)") {
