@@ -26,6 +26,12 @@ python3 scripts/fetch-spec.py          # regenerate openapi.json
 - Merging release-please's PR on `main` tags `vX.Y.Z` and the `release`
   workflow publishes `ghcr.io/<owner>/bexio-mcp:{X.Y.Z,X.Y,latest}` for
   amd64 and arm64, with the version baked in (`-X main.version`).
+- Release steps: PR `dev` → `main` (merge commit, not squash, so
+  release-please sees every conventional commit); release-please opens its
+  release PR. PRs opened by GITHUB_TOKEN start no workflows, so close and
+  reopen it (`gh pr close N && gh pr reopen N`) to run the required checks,
+  then merge. Afterwards bring `main` back into `dev` with a PR, so the
+  release commit and CHANGELOG are on `dev` too.
 
 ## Deploy
 
@@ -67,11 +73,14 @@ setting `IMAGE` to the new version's tag and
   bexio access. Redirect URIs are validated before anything redirects.
 - Bank payments and payroll stay excluded (`servable` in spec.go, absent
   from `modules`): a chat connector must not move money or read salary data.
-- `modules` (oauth.go) maps consent-page areas to OAuth scopes. One scope
-  bexio doesn't know makes it reject the whole sign-in (e.g. `general` is
-  documented but not requestable). Add only verified names.
+- `modules` (oauth.go) maps consent-page areas to OAuth scopes and to the
+  `bexio_docs` groups the server enforces per call; every operation must
+  belong to an area (TestDocs). One scope bexio doesn't know makes it reject
+  the whole sign-in (e.g. `general` is documented but not requestable). Add
+  only verified names.
 - bexio tokens are bound to one company. Several companies means several
-  connectors (`/mcp/<label>`, the label is free text); there is no company
-  parameter.
+  connectors, `/mcp/<company-name>`; there is no company parameter. The
+  callback refuses a company whose name (`company_name` claim of bexio's id
+  token, needs `company_profile`) has another `slug`.
 - Use `example.com`/Acme placeholders in docs and tests, never real company
   names or personal domains.

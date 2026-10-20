@@ -34,39 +34,56 @@ Three tools instead of one per endpoint keeps the assistant's tool choice
 reliable; `guide.md` teaches it bexio's quirks (search syntax, partial
 edits, status ids, the `[Network Link]` placeholder for e-mails, ...).
 
-Not available: bank payments and payroll (never callable, their scopes are
-never requested), PDF and file downloads, file uploads.
+Not available: bank payments, including outgoing payments of bills, and
+payroll (never callable, their scopes are never requested), PDF and file
+downloads, file uploads.
 
 ## Signing in and permissions
 
 1. The client registers itself with the server automatically (OAuth dynamic
    client registration); nobody enters a client ID or secret.
 2. A consent page shows which application asks and where it will be sent
-   back, and lets the user pick the areas and whether access is read only.
-3. The user signs in at bexio and picks the company.
+   back, and lets the user set each area to Off, Read or Read & write (the
+   default), or everything to read only.
+3. The user signs in at bexio and picks the company. If the connector URL
+   names a company (see below), any other one is refused.
 4. The client receives a token that only works through this server.
 
-| Area on the consent page   | bexio scopes                                                         |
-|----------------------------|----------------------------------------------------------------------|
-| Contacts                   | `contact_show`, `contact_edit`                                       |
-| Quotes                     | `kb_offer_show`, `kb_offer_edit` (+ convert to orders/invoices)      |
-| Orders                     | `kb_order_show`, `kb_order_edit` (+ invoices, deliveries from orders) |
-| Invoices                   | `kb_invoice_show`, `kb_invoice_edit`                                 |
-| Items, stock, deliveries   | `article_*`, `stock_edit`, `kb_delivery_*`                           |
-| Projects and time tracking | `project_*`, `monitoring_*`                                          |
-| Notes and tasks            | `note_*`, `task_*`                                                   |
-| Purchase                   | bills, expenses (read), purchase orders                              |
-| Accounting                 | `accounting`                                                         |
-| Files                      | `file`                                                               |
-| Bank accounts              | `bank_account_show` (read only)                                      |
+| Area on the consent page   | bexio scopes                                        |
+|----------------------------|-----------------------------------------------------|
+| Contacts                   | `contact_show`, `contact_edit`                      |
+| Quotes                     | `kb_offer_show`, `kb_offer_edit`                    |
+| Orders                     | `kb_order_show`, `kb_order_edit`                    |
+| Invoices                   | `kb_invoice_show`, `kb_invoice_edit`                |
+| Items, stock, deliveries   | `article_*`, `stock_edit`, `kb_delivery_*`          |
+| Projects and time tracking | `project_*`, `monitoring_*`                         |
+| Notes and tasks            | `note_*`, `task_*`                                  |
+| Purchase                   | bills, expenses, purchase orders                    |
+| Accounting                 | `accounting`                                        |
+| Files                      | `file`                                              |
+| Master data                | none: units, taxes, currencies, payment types, ...  |
+| Bank accounts              | `bank_account_show` (Off or Read only)              |
 
-**Read only** drops every `_edit` scope and removes the `bexio_write` tool,
-which also covers accounting, files and stock, where bexio has no separate
-read scope.
+The server enforces each area itself, on every call: **Off** refuses the
+area's operations, **Read** refuses those that change data and drops the
+area's `_edit` scopes. That also covers accounting, files, stock and master
+data, where bexio has no separate read scope or no scope at all. Turning
+master data off shows a warning: records like invoices and contacts refer to
+the signed-in user, units, taxes and currencies. Converting a document (quote to order or
+invoice, order to delivery) needs both areas on Read & write. **Read only**
+sets every area to Read and removes the `bexio_write` tool.
 
 **Several companies:** a bexio token belongs to one company. Add one
-connector per company and give each URL its own label, e.g.
-`/mcp/acme` and `/mcp/globex`. The label only makes the URLs unique.
+connector per company, with the company's name in the URL, e.g.
+`/mcp/acme-ag` for "Acme AG" and `/mcp/acme-group-ag` for "Acme Group AG".
+Case, spaces and punctuation don't matter, but the whole name must match:
+`/mcp/acme` is neither. A sign-in to another company is refused with a page
+naming the company picked and its connector URL, so a misspelt name shows
+the right one. Plain `/mcp` accepts whichever company is picked.
+
+The check relies on the client sending the connector URL at sign-in (the
+`resource` parameter the MCP spec requires). A client that doesn't send it
+is not checked.
 
 ## Data and credentials
 
@@ -103,7 +120,7 @@ connector per company and give each URL its own label, e.g.
 ## Connect a client
 
 **claude.ai / Claude Desktop:** Settings → Connectors → Add custom
-connector, URL `https://mcp.bextrack.com/mcp` (or with a label), OAuth
+connector, URL `https://mcp.bextrack.com/mcp` (or `/mcp/<company-name>`, see above), OAuth
 client **Register automatically**. Connect, then choose the areas and the
 company. Keep `bexio_write` on "Needs approval" in the connector's tool
 permissions: it can issue and send documents and delete records.
@@ -138,7 +155,7 @@ or `docker compose up -d` with a `.env` (chmod 600) next to
 
 The bexio app needs exactly one redirect URI: `<PUBLIC_URL>/oauth/callback`.
 
-Endpoints: `/mcp` and `/mcp/<label>` (MCP), `/oauth/*` and
+Endpoints: `/mcp` and `/mcp/<company-name>` (MCP), `/oauth/*` and
 `/.well-known/oauth-authorization-server` (sign-in),
 `/.well-known/oauth-protected-resource[/mcp...]` (also fine for health
 checks).

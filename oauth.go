@@ -2,6 +2,7 @@ package main
 
 import (
 	"cmp"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -30,37 +32,47 @@ var (
 // the company profile.
 const baseScopes = "openid profile email offline_access company_profile"
 
-type module struct{ Name, Label, Scopes string }
-
-// modules are the areas offered on the consent page. Banking payments and
-// payroll are deliberately absent, so no client can move money or read salary
-// data. One unknown scope makes bexio reject the whole sign-in: only add
-// verified scope names.
-var modules = []module{
-	{"contacts", "Contacts", "contact_show contact_edit"},
-	{"quotes", "Quotes", "kb_offer_show kb_offer_edit kb_order_edit kb_invoice_edit"},
-	{"orders", "Orders", "kb_order_show kb_order_edit kb_invoice_edit kb_delivery_edit"},
-	{"invoices", "Invoices", "kb_invoice_show kb_invoice_edit"},
-	{"items", "Items, stock and deliveries", "article_show article_edit stock_edit kb_delivery_show kb_delivery_edit"},
-	{"projects", "Projects and time tracking", "project_show project_edit monitoring_show monitoring_edit"},
-	{"notes-tasks", "Notes and tasks", "note_show note_edit task_show task_edit"},
-	{"purchase", "Purchase: bills, expenses, purchase orders", "contact_show kb_bill_show kb_expense_show kb_article_order_show kb_article_order_edit"},
-	{"accounting", "Accounting", "accounting"},
-	{"files", "Files", "file"},
-	{"master-data", "Bank accounts (read only)", "bank_account_show"},
+type module struct {
+	Name, Label, Scopes string
+	Tags                []string // bexio_docs groups, and document types of positions and comments
+	ReadOnly            bool     // nothing to change
 }
 
-// scopesFor turns the areas picked on the consent page into bexio scopes;
-// read-only drops every write scope.
-func scopesFor(picked []string, readOnly bool) string {
+// modules are the areas offered on the consent page, each off, read or read
+// and write. The server enforces that per operation: bexio has no read scope
+// for accounting, files or stock, and master data needs no scope at all.
+// Banking payments and payroll are deliberately absent, so no client can move
+// money or read salary data. One unknown scope makes bexio reject the whole
+// sign-in: only add verified scope names.
+var modules = []module{
+	{"contacts", "Contacts", "contact_show contact_edit", []string{"Contacts", "Additional Addresses", "Contact Relations"}, false},
+	{"quotes", "Quotes", "kb_offer_show kb_offer_edit", []string{"Quotes", "kb_offer"}, false},
+	{"orders", "Orders", "kb_order_show kb_order_edit", []string{"Orders", "kb_order"}, false},
+	{"invoices", "Invoices", "kb_invoice_show kb_invoice_edit", []string{"Invoices", "kb_invoice"}, false},
+	{"items", "Items, stock and deliveries", "article_show article_edit stock_edit kb_delivery_show kb_delivery_edit",
+		[]string{"Items", "Deliveries", "Stock Areas", "Stock locations"}, false},
+	{"projects", "Projects and time tracking", "project_show project_edit monitoring_show monitoring_edit", []string{"Projects", "Timesheets"}, false},
+	{"notes-tasks", "Notes and tasks", "note_show note_edit task_show task_edit", []string{"Notes", "Tasks"}, false},
+	{"purchase", "Purchase: bills, expenses, purchase orders", "contact_show kb_bill_show kb_expense_show kb_article_order_show kb_article_order_edit",
+		[]string{"Bills", "Expenses", "Purchase Orders"}, false},
+	{"accounting", "Accounting", "accounting",
+		[]string{"Accounts", "Account Groups", "Business Years", "Calendar Years", "Manual Entries", "Reports", "Vat Periods"}, false},
+	{"files", "Files", "file", []string{"Files"}, false},
+	{"master-data", "Master data: units, taxes, currencies, payment types, ...", "", []string{"Business Activities", "Communication Types",
+		"Company Profile", "Contact Groups", "Contact Sectors", "Countries", "Currencies", "Document Settings", "Document templates",
+		"Languages", "Payment Types", "Permissions", "Salutations", "Taxes", "Titles", "Units", "User Management"}, false},
+	{"bank-accounts", "Bank accounts", "bank_account_show", []string{"Bank Accounts"}, true},
+}
+
+// scopesFor turns each area's access into bexio scopes: read drops the
+// area's write scopes. Converting a document needs both areas' write scopes.
+func scopesFor(access map[string]bool) string {
 	scopes := strings.Fields(baseScopes)
 	for _, m := range modules {
-		if !slices.Contains(picked, m.Name) {
-			continue
-		}
+		write, ok := access[m.Name]
 		for _, s := range strings.Fields(m.Scopes) {
 			// stock_edit is the only scope that reads stock, so it stays.
-			if !slices.Contains(scopes, s) && !(readOnly && strings.HasSuffix(s, "_edit") && s != "stock_edit") {
+			if ok && !slices.Contains(scopes, s) && (write || !strings.HasSuffix(s, "_edit") || s == "stock_edit") {
 				scopes = append(scopes, s)
 			}
 		}
@@ -73,19 +85,19 @@ func scopesFor(picked []string, readOnly bool) string {
 // tokens. Encrypting them keeps the server stateless. Kind stops one kind
 // from being replayed as another.
 type sealed struct {
-	Kind      string   `json:"k"`
-	Exp       int64    `json:"e,omitempty"`
-	Client    string   `json:"c,omitempty"` // hash of the client_id it was issued to
-	URIs      []string `json:"u,omitempty"` // a client's registered redirect URIs
-	Name      string   `json:"n,omitempty"`
-	Redirect  string   `json:"r,omitempty"`
-	State     string   `json:"s,omitempty"`
-	Challenge string   `json:"p,omitempty"` // the client's PKCE challenge
-	Verifier  string   `json:"v,omitempty"` // this server's PKCE verifier towards bexio
-	Nonce     string   `json:"o,omitempty"`
-	Code      string   `json:"d,omitempty"` // bexio authorization code
-	Token     string   `json:"t,omitempty"` // bexio access or refresh token
-	ReadOnly  bool     `json:"ro,omitempty"`
+	Kind      string          `json:"k"`
+	Exp       int64           `json:"e,omitempty"`
+	Client    string          `json:"c,omitempty"` // hash of the client_id it was issued to
+	URIs      []string        `json:"u,omitempty"` // a client's registered redirect URIs
+	Name      string          `json:"n,omitempty"`
+	Redirect  string          `json:"r,omitempty"`
+	State     string          `json:"s,omitempty"`
+	Challenge string          `json:"p,omitempty"` // the client's PKCE challenge
+	Verifier  string          `json:"v,omitempty"` // this server's PKCE verifier towards bexio
+	Nonce     string          `json:"o,omitempty"`
+	Token     string          `json:"t,omitempty"`  // bexio access or refresh token
+	Access    map[string]bool `json:"a,omitempty"`  // area name: true to read and write, false to read; others are off
+	Company   string          `json:"co,omitempty"` // slug of the company name the connector URL pins
 }
 
 // authServer is the OAuth authorization server clients see. bexio cannot
@@ -223,9 +235,18 @@ func (s *authServer) authorize(w http.ResponseWriter, r *http.Request) {
 	client, ok := s.open(q.Get("client_id"), "client")
 	redirect, challenge := q.Get("redirect_uri"), q.Get("code_challenge")
 	if !ok || !redirectAllowed(redirect) || !redirectRegistered(client.URIs, redirect) || q.Get("response_type") != "code" ||
-		q.Get("code_challenge_method") != "S256" || len(challenge) != 43 || len(q.Get("state")) > 512 {
+		q.Get("code_challenge_method") != "S256" || len(challenge) != 43 || len(q.Get("state")) > 512 || len(q.Get("resource")) > 512 {
 		http.Error(w, "Invalid sign-in request. Remove the connector and add it again.", http.StatusBadRequest)
 		return
+	}
+	// A connector URL /mcp/<company-name> pins the company; clients send it as
+	// the resource (RFC 8707).
+	company := ""
+	if rest, ok := strings.CutPrefix(q.Get("resource"), s.publicURL+"/mcp/"); ok {
+		if r, err := url.PathUnescape(rest); err == nil {
+			rest = r
+		}
+		company = slug(rest)
 	}
 	// A cookie per sign-in ties both the consent form and bexio's callback to
 	// this browser: another site can neither submit the form for the user nor
@@ -250,9 +271,10 @@ func (s *authServer) authorize(w http.ResponseWriter, r *http.Request) {
 		"Target":     target,
 		"Local":      u.Scheme != "https",
 		"Modules":    modules,
+		"Company":    company,
 		"Request": s.seal(sealed{
 			Kind: "consent", Exp: time.Now().Add(10 * time.Minute).Unix(), Client: clientHash(q.Get("client_id")),
-			Redirect: redirect, State: q.Get("state"), Challenge: challenge, Nonce: nonce,
+			Redirect: redirect, State: q.Get("state"), Challenge: challenge, Nonce: nonce, Company: company,
 		}),
 	})
 }
@@ -272,32 +294,40 @@ func (s *authServer) consent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Cancelled. You can close this window.", http.StatusOK)
 		return
 	}
-	picked := r.PostForm["module"]
-	if len(picked) == 0 {
+	access := map[string]bool{}
+	for _, m := range modules {
+		switch r.PostFormValue(m.Name) {
+		case "write":
+			access[m.Name] = !m.ReadOnly && r.PostFormValue("readonly") == ""
+		case "read":
+			access[m.Name] = false
+		}
+	}
+	if len(access) == 0 {
 		http.Error(w, "Pick at least one area: go back and try again.", http.StatusBadRequest)
 		return
 	}
-	readOnly := r.PostFormValue("readonly") != ""
 	verifier := randomString()
 	http.SetCookie(w, s.flowCookie(req.Nonce, 600)) // the bexio login may take a while
 	state := s.seal(sealed{
 		Kind: "state", Exp: time.Now().Add(10 * time.Minute).Unix(), Client: req.Client, Redirect: req.Redirect,
-		State: req.State, Challenge: req.Challenge, Verifier: verifier, Nonce: req.Nonce, ReadOnly: readOnly,
+		State: req.State, Challenge: req.Challenge, Verifier: verifier, Nonce: req.Nonce, Access: access, Company: req.Company,
 	})
 	http.Redirect(w, r, bexioAuthURL+"?"+url.Values{
 		"client_id":             {s.clientID},
 		"redirect_uri":          {s.publicURL + "/oauth/callback"},
 		"response_type":         {"code"},
-		"scope":                 {scopesFor(picked, readOnly)},
+		"scope":                 {scopesFor(access)},
 		"state":                 {state},
 		"code_challenge":        {pkceChallenge(verifier)},
 		"code_challenge_method": {"S256"},
 	}.Encode(), http.StatusSeeOther)
 }
 
-// callback receives bexio's answer and hands the client a code wrapping
-// bexio's. The bexio code is redeemed only at the token endpoint, after the
-// client proved its PKCE verifier; bexio accepts it once, so replays fail.
+// callback redeems bexio's code, refuses a company other than the one the
+// connector URL pins, and hands the client a code carrying bexio's refresh
+// token. Unlike bexio's code it is not single use: for its 2 minutes the
+// client's PKCE verifier is what stops replays.
 func (s *authServer) callback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	st, ok := s.open(q.Get("state"), "state")
@@ -315,9 +345,23 @@ func (s *authServer) callback(w http.ResponseWriter, r *http.Request) {
 		s.redirectClient(w, r, st.Redirect, url.Values{"error": {e}, "state": {st.State}})
 		return
 	}
+	t, err := s.bexioToken(r.Context(), url.Values{"grant_type": {"authorization_code"}, "code": {q.Get("code")},
+		"code_verifier": {st.Verifier}, "redirect_uri": {s.publicURL + "/oauth/callback"}})
+	if err != nil {
+		log.Printf("callback: bexio refused: %v", err)
+		http.Error(w, "bexio did not finish the sign-in. Start it again from your app.", http.StatusBadRequest)
+		return
+	}
+	if name := companyName(t.IDToken); st.Company != "" && slug(name) != st.Company {
+		log.Print("callback: other company than the connector URL pins")
+		http.Error(w, fmt.Sprintf("Wrong bexio company. This connector is for %s, but you picked %s.\n\n"+
+			"Start the sign-in again from your app and pick %[1]s at bexio. If %[2]s is the company you want, "+
+			"its connector URL is %[3]s/mcp/%[4]s", st.Company, cmp.Or(name, "another company"), s.publicURL, slug(name)), http.StatusForbidden)
+		return
+	}
 	code := s.seal(sealed{
 		Kind: "code", Exp: time.Now().Add(2 * time.Minute).Unix(), Client: st.Client, Redirect: st.Redirect,
-		Challenge: st.Challenge, Verifier: st.Verifier, Code: q.Get("code"), ReadOnly: st.ReadOnly,
+		Challenge: st.Challenge, Token: t.RefreshToken, Access: st.Access,
 	})
 	s.redirectClient(w, r, st.Redirect, url.Values{"code": {code}, "state": {st.State}})
 }
@@ -346,13 +390,12 @@ func (s *authServer) redirectClient(w http.ResponseWriter, r *http.Request, redi
 	http.Redirect(w, r, u.String(), http.StatusFound)
 }
 
-// token redeems codes and refresh tokens at bexio with this server's client
-// secret and returns bexio's tokens sealed, so they only work through here.
+// token redeems codes and refresh tokens and returns bexio's tokens sealed,
+// so they only work through here.
 func (s *authServer) token(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	grantType, caller := r.PostFormValue("grant_type"), clientHash(r.PostFormValue("client_id"))
 	var grant sealed
-	form := url.Values{"client_id": {s.clientID}, "client_secret": {s.clientSecret}, "grant_type": {grantType}}
 	switch grantType {
 	case "authorization_code":
 		c, ok := s.open(r.PostFormValue("code"), "code")
@@ -362,9 +405,6 @@ func (s *authServer) token(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		grant = c
-		form.Set("code", c.Code)
-		form.Set("code_verifier", c.Verifier)
-		form.Set("redirect_uri", s.publicURL+"/oauth/callback")
 	case "refresh_token":
 		rt, ok := s.open(r.PostFormValue("refresh_token"), "refresh")
 		if !ok || rt.Client != caller {
@@ -372,18 +412,46 @@ func (s *authServer) token(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		grant = rt
-		form.Set("refresh_token", rt.Token)
 	default:
 		oauthError(w, http.StatusBadRequest, "unsupported_grant_type")
 		return
 	}
 
-	var t struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int64  `json:"expires_in"`
+	// A code carries the refresh token bexio issued at the callback, so both
+	// grants are a refresh at bexio.
+	t, err := s.bexioToken(r.Context(), url.Values{"grant_type": {"refresh_token"}, "refresh_token": {grant.Token}})
+	if err != nil {
+		log.Printf("token %s: bexio refused: %v", grantType, err)
+		oauthError(w, http.StatusBadRequest, "invalid_grant") // Claude expects exactly this to restart sign-in
+		return
 	}
-	req, _ := http.NewRequestWithContext(r.Context(), "POST", bexioTokenURL, strings.NewReader(form.Encode()))
+	expiresIn := cmp.Or(t.ExpiresIn, 300)
+	log.Printf("token %s: ok, expires_in %d", grantType, expiresIn)
+	out := map[string]any{
+		"access_token": s.seal(sealed{Kind: "access", Exp: time.Now().Unix() + expiresIn, Token: t.AccessToken, Access: grant.Access}),
+		"token_type":   "Bearer",
+		"expires_in":   expiresIn,
+	}
+	if refresh := cmp.Or(t.RefreshToken, grant.Token); refresh != "" { // bexio may not rotate
+		// Expires unless used: each refresh issues a new one, so active clients never notice.
+		out["refresh_token"] = s.seal(sealed{Kind: "refresh", Exp: time.Now().AddDate(0, 0, 90).Unix(), Client: grant.Client, Token: refresh, Access: grant.Access})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+type bexioTokens struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int64  `json:"expires_in"`
+	IDToken      string `json:"id_token"`
+}
+
+// bexioToken calls bexio's token endpoint with this server's client secret.
+func (s *authServer) bexioToken(ctx context.Context, form url.Values) (bexioTokens, error) {
+	var t bexioTokens
+	form.Set("client_id", s.clientID)
+	form.Set("client_secret", s.clientSecret)
+	req, _ := http.NewRequestWithContext(ctx, "POST", bexioTokenURL, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := client.Do(req)
 	if err == nil {
@@ -392,26 +460,33 @@ func (s *authServer) token(w http.ResponseWriter, r *http.Request) {
 			err = errors.New(resp.Status)
 		}
 	}
-	if err != nil || t.AccessToken == "" {
-		log.Printf("token %s: bexio refused: %v", grantType, err)
-		if resp == nil || resp.StatusCode >= 500 { // bexio down, not a stale code
-			report("bexio token %s: %v", grantType, cause(err))
-		}
-		oauthError(w, http.StatusBadRequest, "invalid_grant") // Claude expects exactly this to restart sign-in
-		return
+	if ctx.Err() == nil && (resp == nil || resp.StatusCode >= 500) { // bexio down, not a stale code or a closed tab
+		report("bexio token %s: %v", form.Get("grant_type"), cause(err))
 	}
-	expiresIn := cmp.Or(t.ExpiresIn, 300)
-	log.Printf("token %s: ok, expires_in %d", grantType, expiresIn)
-	out := map[string]any{
-		"access_token": s.seal(sealed{Kind: "access", Exp: time.Now().Unix() + expiresIn, Token: t.AccessToken, ReadOnly: grant.ReadOnly}),
-		"token_type":   "Bearer",
-		"expires_in":   expiresIn,
+	if err == nil && t.AccessToken == "" {
+		err = errors.New("no access token")
 	}
-	if refresh := cmp.Or(t.RefreshToken, grant.Token); refresh != "" { // bexio may not rotate
-		// Expires unless used: each refresh issues a new one, so active clients never notice.
-		out["refresh_token"] = s.seal(sealed{Kind: "refresh", Exp: time.Now().AddDate(0, 0, 90).Unix(), Client: grant.Client, Token: refresh, ReadOnly: grant.ReadOnly})
+	return t, err
+}
+
+// companyName reads the company_name claim (company_profile scope) of bexio's
+// id token. It came straight from bexio's token endpoint over TLS, so its
+// signature needs no check (OIDC Core 3.1.3.7).
+func companyName(idToken string) string {
+	var claims struct {
+		CompanyName string `json:"company_name"`
 	}
-	writeJSON(w, http.StatusOK, out)
+	payload, _ := base64.RawURLEncoding.DecodeString(strings.Split(idToken+"..", ".")[1])
+	json.Unmarshal(payload, &claims)
+	return claims.CompanyName
+}
+
+// slug turns a company name into its connector URL label: lower case letters
+// and digits, anything else one "-" ("Acme Group, AG" is "acme-group-ag").
+func slug(name string) string {
+	return strings.Join(strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}), "-")
 }
 
 func clientHash(clientID string) string {
@@ -481,9 +556,19 @@ header span { font-size: 13px; letter-spacing: 1px; padding-top: 6px; }
 .target span { font-family: ui-monospace, Menlo, monospace; color: var(--fg); word-break: break-all; }
 .warn { background: var(--warn); border-radius: 3px; padding: 8px 12px; margin-top: 12px; font-size: 13px; }
 .section { padding: 14px 24px 6px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
-label.row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 24px; border-top: 1px solid var(--line); cursor: pointer; }
+.row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 11px 24px; border-top: 1px solid var(--line); }
+label.row { flex-wrap: nowrap; cursor: pointer; }
 label.row:hover { background: #fafafa; }
-label.row small { display: block; color: var(--muted); font-size: 13px; }
+.row small { display: block; color: var(--muted); font-size: 13px; }
+.seg { display: flex; flex: none; margin-left: auto; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; font-size: 13px; }
+.seg label { position: relative; cursor: pointer; }
+.seg label + label { border-left: 1px solid var(--line); }
+.seg input { position: absolute; opacity: 0; }
+.seg span { display: block; padding: 5px 10px; }
+.seg input:checked + span { background: var(--teal); color: #fff; }
+.seg input:focus-visible + span { outline: 2px solid var(--teal-dark); outline-offset: -2px; }
+.md-warn { display: none; margin: 0 24px 11px; }
+form:has(input[name=master-data][value=off]:checked) .md-warn { display: block; }
 input[type=checkbox] { width: 18px; height: 18px; flex: none; accent-color: var(--teal); }
 .actions { display: flex; flex-direction: row-reverse; align-items: center; gap: 8px; padding: 18px 24px; border-top: 1px solid var(--line); }
 button { font: inherit; border: 0; border-radius: 3px; padding: 10px 18px; cursor: pointer; }
@@ -492,6 +577,7 @@ button[value=allow]:hover { background: var(--teal-dark); }
 button[value=deny] { background: transparent; color: var(--muted); }
 button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .note { max-width: 480px; margin: 12px auto 0; text-align: center; color: var(--muted); font-size: 12px; }
+.note strong, .note a { color: var(--fg); }
 </style>
 </head>
 <body>
@@ -501,19 +587,26 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outl
 <div class="badge"><img src="{{.BadgeLogo}}" alt=""></div>
 <p><strong>{{or .Name "An application"}}</strong> wants to connect to your bexio account.<br>Choose what it may use.</p>
 <p class="target">Afterwards you will be sent back to <span>{{.Target}}</span></p>
+{{if .Company}}<p class="target">This connector is for <span>{{.Company}}</span>: pick that company at bexio.</p>{{end}}
 {{if .Local}}<p class="warn">That address opens a program on your own computer. Only continue if you just started this sign-in yourself.</p>{{end}}
 </div>
 <form method="post">
 <input type="hidden" name="request" value="{{.Request}}">
 <div class="section">Areas</div>
-{{range .Modules}}<label class="row">{{.Label}}<input type="checkbox" name="module" value="{{.Name}}" checked></label>
-{{end}}<div class="section">Access</div>
-<label class="row"><span>Read only<small>Can look things up, never changes anything</small></span><input type="checkbox" name="readonly" value="1"></label>
+{{range .Modules}}<div class="row"><span>{{.Label}}</span><span class="seg" role="radiogroup" aria-label="{{.Label}}">
+<label><input type="radio" name="{{.Name}}" value="off"><span>Off</span></label>
+<label><input type="radio" name="{{.Name}}" value="read"{{if .ReadOnly}} checked{{end}}><span>Read</span></label>
+{{if not .ReadOnly}}<label><input type="radio" name="{{.Name}}" value="write" checked><span>Read &amp; write</span></label>{{end}}
+</span></div>
+{{if eq .Name "master-data"}}<p class="warn md-warn">Without master data, creating invoices, contacts and other records may fail: they refer to the signed-in user, units, taxes, currencies and payment types.</p>
+{{end}}{{end}}<div class="section">Access</div>
+<label class="row"><span>Read only<small>Can look things up, never changes anything, whatever is set above</small></span><input type="checkbox" name="readonly" value="1"></label>
 <div class="actions"><button name="action" value="allow">Continue to bexio</button><button name="action" value="deny">Cancel</button></div>
 </form>
 </div>
 <p class="note">Bank payments and payroll are never available through this connector.<br>
-Provided as is, without warranty or liability. Use at your own risk.<br>BexTrackMCP {{.Version}}</p>
+<strong>Use this connector at your own risk.</strong> It is provided as is, without warranty or liability.<br>
+BexTrackMCP {{.Version}} · <a href="https://github.com/lukeisontheroad/bexio-mcp" target="_blank" rel="noopener">Source code on GitHub</a></p>
 </body>
 </html>
 `))
