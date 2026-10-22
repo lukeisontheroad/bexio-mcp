@@ -37,6 +37,9 @@ const (
 	// ponytail: hard cap per tool result; a 2000-row list would flood the
 	// chat context. Claude pages with limit/offset when it sees the note.
 	maxResult = 100_000
+	// bexio lists default to 500 rows, far past maxResult; calls without a
+	// limit get this many instead.
+	defaultLimit = 50
 )
 
 // version is set at build time (-ldflags "-X main.version=1.2.3").
@@ -244,7 +247,20 @@ func (a *api) caller(readOnly bool) mcp.ToolHandlerFor[callInput, any] {
 		if !write && !op.readOnly() {
 			return nil, nil, fmt.Errorf("%s changes data, but %q is read only for this connector", op.ID, area.Tag)
 		}
+		_, limited := in.Query["limit"]
+		defaulted := !limited && slices.ContainsFunc(op.params, func(p any) bool { return a.deref(p)["name"] == "limit" })
+		if defaulted {
+			if in.Query == nil {
+				in.Query = map[string]any{}
+			}
+			in.Query["limit"] = defaultLimit
+		}
 		text, err := call(ctx, req.Extra.Header.Get("Authorization"), op, in)
+		// 2.0 lists don't say whether more rows exist; a full page might.
+		var rows []json.RawMessage
+		if defaulted && json.Unmarshal([]byte(text), &rows) == nil && len(rows) == defaultLimit {
+			text += fmt.Sprintf("\n[%d rows, the default limit: more may exist; page with offset or raise limit]", defaultLimit)
+		}
 		return textResult(text), nil, err
 	}
 }

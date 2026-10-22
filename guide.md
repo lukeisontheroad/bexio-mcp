@@ -19,7 +19,7 @@ call is a live request against that company's books.
   Criteria: `=`, `!=`, `>`, `>=`, `<`, `<=`, `like`, `not_like`, `is_null`,
   `not_null`, `in`, `not_in`. `like` needs explicit `%` wildcards
   (`"%acme%"`).
-- List/search query parameters: `limit` (max 2000; keep it small),
+- List/search query parameters: `limit` (50 unless set, max 2000),
   `offset`, `order_by` (comma-separated, `_desc` suffix, e.g. `id_desc`),
   `show_archived`. Long results are truncated; page with `limit`/`offset`.
 - Signed-in user: `v3ShowMe`. Company: `v2ListCompanyProfile`.

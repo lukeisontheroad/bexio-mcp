@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -27,6 +28,7 @@ type fakeBexio struct {
 	apiBody string
 	token   url.Values
 	company string // company_name in the id token
+	reply   string // API answer, `[{"id":1}]` if empty
 }
 
 func setup(t *testing.T) (*httptest.Server, *authServer, *fakeBexio) {
@@ -36,7 +38,7 @@ func setup(t *testing.T) (*httptest.Server, *authServer, *fakeBexio) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path != "/token" {
 			fake.api, fake.apiBody = r, string(body)
-			io.WriteString(w, `[{"id":1}]`)
+			io.WriteString(w, cmp.Or(fake.reply, `[{"id":1}]`))
 			return
 		}
 		fake.token, _ = url.ParseQuery(string(body))
@@ -161,8 +163,17 @@ func TestServer(t *testing.T) {
 	}
 
 	callTool("bexio_read", map[string]any{"operation": "v2ShowContact", "path_params": map[string]any{"contact_id": 1234567}})
-	if fake.api.URL.Path != "/2.0/contact/1234567" {
-		t.Fatalf("path %s", fake.api.URL.Path)
+	if fake.api.URL.Path != "/2.0/contact/1234567" || fake.api.URL.RawQuery != "" {
+		t.Fatalf("forwarded %s", fake.api.URL)
+	}
+
+	// Lists without a limit get defaultLimit, not bexio's 500, and a full
+	// page says that more rows may exist.
+	fake.reply = "[" + strings.Repeat(`{"id":1},`, defaultLimit-1) + `{"id":1}]`
+	res = callTool("bexio_read", map[string]any{"operation": "v2ListContacts"})
+	fake.reply = ""
+	if fake.api.URL.RawQuery != "limit=50" || !strings.HasSuffix(text(res), "more may exist; page with offset or raise limit]") {
+		t.Fatalf("list query %q answered %s", fake.api.URL.RawQuery, text(res))
 	}
 
 	if res := callTool("bexio_read", map[string]any{"operation": "v2ShowContact", "path_params": map[string]any{"contact_id": ".."}}); !res.IsError {
