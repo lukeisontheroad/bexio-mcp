@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -27,6 +28,7 @@ type fakeBexio struct {
 	apiBody string
 	token   url.Values
 	company string // company_name in the id token
+	reply   string // API answer, `[{"id":1}]` if empty
 }
 
 func setup(t *testing.T) (*httptest.Server, *authServer, *fakeBexio) {
@@ -36,7 +38,7 @@ func setup(t *testing.T) (*httptest.Server, *authServer, *fakeBexio) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path != "/token" {
 			fake.api, fake.apiBody = r, string(body)
-			io.WriteString(w, `[{"id":1}]`)
+			io.WriteString(w, cmp.Or(fake.reply, `[{"id":1}]`))
 			return
 		}
 		fake.token, _ = url.ParseQuery(string(body))
@@ -130,11 +132,7 @@ func TestServer(t *testing.T) {
 		t.Fatalf("metadata %+v", prm)
 	}
 
-	all := map[string]bool{}
-	for _, m := range modules {
-		all[m.Name()] = m.Writable()
-	}
-	token := auth.seal(sealed{Kind: "access", Exp: time.Now().Add(time.Hour).Unix(), Token: "bexio-access", Access: all})
+	token := auth.seal(sealed{Kind: "access", Exp: time.Now().Add(time.Hour).Unix(), Token: "bexio-access", Access: allAccess()})
 	session := connect(t, srv.URL+"/mcp/acme", token)
 	callOn := func(session *mcp.ClientSession, name string, args map[string]any) *mcp.CallToolResult {
 		t.Helper()
@@ -161,8 +159,17 @@ func TestServer(t *testing.T) {
 	}
 
 	callTool("bexio_read", map[string]any{"operation": "v2ShowContact", "path_params": map[string]any{"contact_id": 1234567}})
-	if fake.api.URL.Path != "/2.0/contact/1234567" {
-		t.Fatalf("path %s", fake.api.URL.Path)
+	if fake.api.URL.Path != "/2.0/contact/1234567" || fake.api.URL.RawQuery != "" {
+		t.Fatalf("forwarded %s", fake.api.URL)
+	}
+
+	// Lists without a limit get defaultLimit, not bexio's 500, drop nulls,
+	// and a full page says that more rows may exist.
+	fake.reply = "[" + strings.Repeat(`{"id":1,"mail":null},`, defaultLimit-1) + `{"id":1,"mail":null}]`
+	res = callTool("bexio_read", map[string]any{"operation": "v2ListContacts", "query": map[string]any{"limit": nil}})
+	fake.reply = ""
+	if fake.api.URL.RawQuery != "limit=50" || strings.Contains(text(res), "mail") || !strings.HasSuffix(text(res), "more may exist; page with offset or raise limit]") {
+		t.Fatalf("list query %q answered %s", fake.api.URL.RawQuery, text(res))
 	}
 
 	if res := callTool("bexio_read", map[string]any{"operation": "v2ShowContact", "path_params": map[string]any{"contact_id": ".."}}); !res.IsError {
@@ -196,6 +203,16 @@ func TestServer(t *testing.T) {
 		if !res.IsError {
 			t.Errorf("%s was forwarded", name)
 		}
+	}
+	// Docs show only what this connector can run.
+	index := text(callOn(some, "bexio_docs", map[string]any{}))
+	groups := text(callOn(some, "bexio_docs", map[string]any{"topic": "Contacts, Item positions"}))
+	if strings.Contains(index, "Invoices (") || !strings.Contains(index, "Quotes (") || strings.Contains(groups, "v2CreateContact") ||
+		!strings.Contains(groups, "v2ShowContact") || !strings.Contains(groups, "v2CreateItemPosition") {
+		t.Fatalf("docs for some areas:\n%s\n%s", index, groups)
+	}
+	if res := callOn(some, "bexio_docs", map[string]any{"topic": "v2CreateContact"}); !res.IsError {
+		t.Fatalf("documented a write to a read-only area: %s", text(res))
 	}
 	if res := callOn(some, "bexio_write", position("kb_offer")); res.IsError || fake.api.URL.Path != "/2.0/kb_offer/1/kb_position_custom" {
 		t.Fatalf("quote position: %s, forwarded %s", text(res), fake.api.URL.Path)
@@ -441,17 +458,44 @@ func TestScrubEvent(t *testing.T) {
 	}
 }
 
+func allAccess() map[string]bool {
+	all := map[string]bool{}
+	for _, m := range modules {
+		all[m.Name()] = m.Writable()
+	}
+	return all
+}
+
+func TestShape(t *testing.T) {
+	for _, c := range []struct {
+		in     string
+		fields []string
+		want   string
+	}{
+		{`[{"id":1,"name_1":"A&B <x>","mail":null}]`, nil, `[{"id":1,"name_1":"A&B <x>"}]`},
+		{`{"id":1,"mail":null}`, nil, `{"id":1,"mail":null}`},
+		{`{"data":[{"id":"a1","total":12345678901234567.10,"note":null}],"paging":{"page":1}}`, nil, `{"data":[{"id":"a1","total":12345678901234567.10}],"paging":{"page":1}}`},
+		{`[{"id":1,"name_1":"Acme","mail":"a@example.com"}]`, []string{"id", "name_1"}, `[{"id":1,"name_1":"Acme"}]`},
+		{`{"id":1,"mail":null,"city":"Bern"}`, []string{"id", "mail"}, `{"id":1,"mail":null}`},
+		{`[{"id":1`, []string{"id"}, `[{"id":1`},
+	} {
+		if got := shape([]byte(c.in), c.fields); got != c.want {
+			t.Errorf("shape(%s, %v) = %s, want %s", c.in, c.fields, got, c.want)
+		}
+	}
+}
+
 func TestDocs(t *testing.T) {
-	a := bexioAPI
+	a, all := bexioAPI, allAccess()
 	if (module{Tag: "Bank Accounts"}).Writable() {
 		t.Error("bank accounts can be changed")
 	}
 	for id := range a.ops {
-		if doc, err := a.doc(id); err != nil || !strings.Contains(doc, id) {
+		if doc, err := a.doc(id, all); err != nil || !strings.Contains(doc, id) {
 			t.Fatalf("%s: %v", id, err)
 		}
 	}
-	if _, err := a.doc("payments"); err == nil || a.ops["ApiOutgoingPayment_POST"] != nil {
+	if _, err := a.doc("payments", all); err == nil || a.ops["ApiOutgoingPayment_POST"] != nil {
 		t.Fatal("bank payments are documented")
 	}
 	for id, op := range a.ops {
@@ -459,9 +503,23 @@ func TestDocs(t *testing.T) {
 			t.Errorf("%s (%s) is in no consent-page row", id, op.Tag)
 		}
 	}
-	doc, _ := a.doc("v2ShowContact")
+	doc, _ := a.doc("v2ShowContact", all)
 	if !strings.Contains(doc, "contact_id (path, required)") {
 		t.Fatalf("path-level parameter missing:\n%s", doc)
+	}
+	// Ids match without case, misses suggest close ones, and one call
+	// can take several topics.
+	if op, _ := a.find("V2SEARCHCONTACT"); op == nil || op.ID != "v2SearchContact" {
+		t.Fatalf("case-insensitive lookup: %v", op)
+	}
+	if _, err := a.doc("v2SearchContacts", all); err == nil || !strings.Contains(err.Error(), "did you mean v2SearchContact") {
+		t.Fatalf("no suggestion: %v", err)
+	}
+	if doc, err := a.docs("v2ShowContact, nope,", all); err != nil || !strings.Contains(doc, "contact_id (path") || !strings.Contains(doc, `unknown topic "nope"`) {
+		t.Fatalf("several topics: %v\n%s", err, doc)
+	}
+	if _, err := a.docs("nope,nada", all); err == nil {
+		t.Fatal("all topics unknown, but no error")
 	}
 	for _, m := range regexp.MustCompile("`((?:v[23])?[A-Z]?[a-z]+[A-Z]\\w+)`").FindAllStringSubmatch(guide, -1) {
 		if a.ops[m[1]] == nil {
