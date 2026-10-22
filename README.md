@@ -26,8 +26,8 @@ The assistant gets three tools on top of the full public bexio API
 
 | Tool          | Does                                                                 |
 |---------------|----------------------------------------------------------------------|
-| `bexio_docs`  | API conventions, operation groups, and each operation's parameters and request body. The assistant reads it first. |
-| `bexio_read`  | Runs read operations (GET and searches) by operationId               |
+| `bexio_docs`  | API conventions, operation groups, and each operation's parameters and request body, several topics per call. Shows only what the connection was granted. The assistant reads it first. |
+| `bexio_read`  | Runs read operations (GET and searches) by operationId. `fields` keeps only the named fields of each record. |
 | `bexio_write` | Runs everything that changes data: create, edit, delete, issue, send. Absent on read-only connections. |
 
 Three tools instead of one per endpoint keeps the assistant's tool choice

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"regexp"
@@ -40,6 +41,23 @@ func (o *operation) area(in callInput) module {
 		}
 	}
 	return module{}
+}
+
+// usable reports whether a connector with this access can run the
+// operation; document positions and comments count under any sales row.
+func (o *operation) usable(access map[string]bool) bool {
+	doc := strings.HasPrefix(o.Path, "/2.0/{kb_document_type}")
+	for _, m := range modules {
+		write, granted := access[m.Name()]
+		if granted && (write || o.readOnly()) && (doc && m.Doc != "" || !doc && m.Tag == o.Tag) {
+			return true
+		}
+	}
+	return false
+}
+
+func usableOps(ops []*operation, access map[string]bool) []*operation {
+	return slices.DeleteFunc(slices.Clone(ops), func(op *operation) bool { return !op.usable(access) })
 }
 
 type api struct {
@@ -92,17 +110,72 @@ func servable(path string, raw map[string]any) bool {
 	return content == nil || content["application/json"] != nil
 }
 
-// doc answers bexio_docs: the guide plus group index for an empty topic, an
-// operation list for a tag, or the full reference for an operationId.
-func (a *api) doc(topic string) (string, error) {
-	if topic == "" {
-		return a.index(), nil
+// find looks an operation up by id, ignoring case. A miss returns close
+// ids instead: bexio's naming is uneven (v2SearchContact, v2SearchInvoices).
+func (a *api) find(id string) (*operation, []string) {
+	var near []string
+	for _, op := range a.ops {
+		l, g := strings.ToLower(op.ID), strings.ToLower(id)
+		if l == g {
+			return op, nil
+		}
+		if g != "" && (strings.Contains(l, g) || strings.Contains(g, l)) {
+			near = append(near, op.ID)
+		}
 	}
-	if op := a.ops[topic]; op != nil {
+	slices.Sort(near)
+	return nil, near[:min(len(near), 5)]
+}
+
+func didYouMean(near []string) string {
+	if len(near) == 0 {
+		return ""
+	}
+	return " (did you mean " + strings.Join(near, ", ") + "?)"
+}
+
+// docs answers bexio_docs for comma-separated topics, the guide plus group
+// index for none. A failed topic shows its error in place; only if all
+// fail is the answer an error.
+func (a *api) docs(topics string, access map[string]bool) (string, error) {
+	var parts []string
+	failed := 0
+	for _, t := range strings.Split(topics, ",") {
+		if t = strings.TrimSpace(t); t == "" {
+			continue
+		}
+		text, err := a.doc(t, access)
+		if err != nil {
+			text, failed = err.Error(), failed+1
+		}
+		parts = append(parts, text)
+	}
+	if len(parts) == 0 {
+		return a.index(access), nil
+	}
+	text := strings.Join(parts, "\n\n")
+	if failed == len(parts) {
+		return "", errors.New(text)
+	}
+	return text, nil
+}
+
+// doc is an operation list for a tag or the full reference for an
+// operationId, limited to what the connector can run.
+func (a *api) doc(topic string, access map[string]bool) (string, error) {
+	op, near := a.find(topic)
+	if op != nil {
+		if !op.usable(access) {
+			return "", fmt.Errorf("%s is not available on this connector: its area is off or read only", op.ID)
+		}
 		return a.opDoc(op), nil
 	}
 	for tag, ops := range a.byTag {
 		if strings.EqualFold(tag, topic) {
+			ops = usableOps(ops, access)
+			if len(ops) == 0 {
+				return "", fmt.Errorf("%s is not available on this connector: its area is off", tag)
+			}
 			var b strings.Builder
 			fmt.Fprintf(&b, "# %s\n", tag)
 			for _, op := range ops {
@@ -111,17 +184,17 @@ func (a *api) doc(topic string) (string, error) {
 			return b.String(), nil
 		}
 	}
-	return "", fmt.Errorf("unknown topic %q: call bexio_docs without a topic for the list of groups", topic)
+	return "", fmt.Errorf("unknown topic %q%s: call bexio_docs without a topic for the list of groups", topic, didYouMean(near))
 }
 
-func (a *api) index() string {
+func (a *api) index(access map[string]bool) string {
 	var b strings.Builder
 	b.WriteString(guide)
 	b.WriteString("\n## Operation groups (pass one as topic)\n")
 	for _, g := range list(a.root["x-tagGroups"]) {
 		var tags []string
 		for _, t := range list(obj(g)["tags"]) {
-			if n := len(a.byTag[str(t)]); n > 0 {
+			if n := len(usableOps(a.byTag[str(t)], access)); n > 0 {
 				tags = append(tags, fmt.Sprintf("%s (%d)", t, n))
 			}
 		}
