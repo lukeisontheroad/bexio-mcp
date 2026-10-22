@@ -37,6 +37,9 @@ const (
 	// ponytail: hard cap per tool result; a 2000-row list would flood the
 	// chat context. Claude pages with limit/offset when it sees the note.
 	maxResult = 100_000
+	// shortcut: answers are read up to 4 MB (2000 large records) so fields
+	// can cut them down before maxResult applies; raise it if lists outgrow it.
+	maxRead = 4 << 20
 	// bexio lists default to 500 rows, far past maxResult; calls without a
 	// limit get this many instead.
 	defaultLimit = 50
@@ -184,7 +187,7 @@ func requireBearer(next http.Handler, auth *authServer) http.Handler {
 }
 
 type docsInput struct {
-	Topic string `json:"topic,omitempty" jsonschema:"empty for conventions and the group index, a group name (e.g. Invoices) for its operations, or an operationId (e.g. v2CreateInvoice) for parameters and body"`
+	Topic string `json:"topic,omitempty" jsonschema:"empty for conventions and the group index, a group name (e.g. Invoices) for its operations, or an operationId (e.g. v2CreateInvoice) for parameters and body; several separated by commas"`
 }
 
 type callInput struct {
@@ -192,6 +195,7 @@ type callInput struct {
 	PathParams map[string]any `json:"path_params,omitempty" jsonschema:"values for the {placeholders} in the operation path, e.g. {\"contact_id\": 42}"`
 	Query      map[string]any `json:"query,omitempty" jsonschema:"query string parameters, e.g. {\"limit\": 20, \"order_by\": \"id_desc\"}; arrays repeat the parameter"`
 	Body       any            `json:"body,omitempty" jsonschema:"JSON request body as documented by bexio_docs"`
+	Fields     []string       `json:"fields,omitempty" jsonschema:"keep only these fields of each returned record, e.g. [\"id\", \"name_1\"]"`
 }
 
 func newServer(a *api, readOnly bool) *mcp.Server {
@@ -205,15 +209,16 @@ func newServer(a *api, readOnly bool) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "BexTrackMCP", Version: version}, &mcp.ServerOptions{Instructions: instructions})
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "bexio_docs",
-		Description: "bexio API reference. Start here: no topic gives conventions and operation groups; a group lists its operations; an operationId shows its parameters and request body.",
+		Description: "bexio API reference. Start here: no topic gives conventions and operation groups; a group lists its operations; an operationId shows its parameters and request body. Several topics can be comma-separated.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: new(false)},
-	}, func(_ context.Context, _ *mcp.CallToolRequest, in docsInput) (*mcp.CallToolResult, any, error) {
-		text, err := a.doc(in.Topic)
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in docsInput) (*mcp.CallToolResult, any, error) {
+		access, _ := ctx.Value(accessKey{}).(map[string]bool)
+		text, err := a.docs(in.Topic, access)
 		return textResult(text), nil, err
 	})
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "bexio_read",
-		Description: "Run a read-only bexio operation (GET or search) by operationId. Look up its parameters with bexio_docs first.",
+		Description: "Run a read-only bexio operation (GET or search) by operationId. Look up its parameters with bexio_docs first. Pass fields to get only the fields you need.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, a.caller(true))
 	if !readOnly {
@@ -228,9 +233,9 @@ func newServer(a *api, readOnly bool) *mcp.Server {
 
 func (a *api) caller(readOnly bool) mcp.ToolHandlerFor[callInput, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in callInput) (*mcp.CallToolResult, any, error) {
-		op := a.ops[in.Operation]
+		op, near := a.find(in.Operation)
 		if op == nil {
-			return nil, nil, fmt.Errorf("unknown operation %q: look it up with bexio_docs", in.Operation)
+			return nil, nil, fmt.Errorf("unknown operation %q%s: look it up with bexio_docs", in.Operation, didYouMean(near))
 		}
 		if readOnly && !op.readOnly() {
 			return nil, nil, fmt.Errorf("%s changes data: it needs bexio_write, which read-only connectors don't have", op.ID)
@@ -316,20 +321,54 @@ func call(ctx context.Context, authorization string, op *operation, in callInput
 	if resp.StatusCode >= 500 {
 		report("bexio %s answered %s", op.ID, resp.Status)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResult+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRead))
 	switch {
 	case err != nil:
 		return "", err
 	case resp.StatusCode == http.StatusUnauthorized:
 		return "", errors.New("bexio rejected the token: reconnect the connector")
 	case resp.StatusCode >= 300:
-		return "", fmt.Errorf("bexio answered %s: %s", resp.Status, data)
+		return "", fmt.Errorf("bexio answered %s: %s", resp.Status, data[:min(len(data), maxResult)])
 	case len(data) == 0:
 		return resp.Status, nil // e.g. 204 after a 4.0 delete
-	case len(data) > maxResult:
-		return strings.ToValidUTF8(string(data[:maxResult]), "") + "\n[truncated: narrow the request with limit/offset or a search]", nil
 	}
-	return string(data), nil
+	text := shape(data, in.Fields)
+	if len(text) > maxResult {
+		return strings.ToValidUTF8(text[:maxResult], "") + "\n[truncated: narrow the request with fields, limit/offset or a search]", nil
+	}
+	return text, nil
+}
+
+// shape cuts a bexio answer down for the chat: with fields, each record
+// keeps only those, and lists drop null values. A single record keeps its
+// nulls, since 4.0 updates send it back whole.
+func shape(data []byte, fields []string) string {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber() // ids and amounts must not pass through float64
+	var v any
+	if dec.Decode(&v) != nil {
+		return string(data) // not JSON, or cut at maxRead
+	}
+	records, list := v.([]any)
+	if m, ok := v.(map[string]any); ok {
+		if records, list = m["data"].([]any); !list { // 4.0 lists wrap theirs in data
+			records = []any{m}
+		}
+	}
+	for _, r := range records {
+		if r, ok := r.(map[string]any); ok {
+			for k, val := range r {
+				if list && val == nil || len(fields) > 0 && !slices.Contains(fields, k) {
+					delete(r, k)
+				}
+			}
+		}
+	}
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	enc.Encode(v)
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 // param formats a JSON value for a URL; JSON numbers arrive as float64,

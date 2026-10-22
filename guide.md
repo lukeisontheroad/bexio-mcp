@@ -7,6 +7,8 @@ call is a live request against that company's books.
 
 1. `bexio_docs` with a group name (e.g. `Contacts`) lists its operations;
    with an operationId it shows path/query parameters and the request body.
+   Separate several topics with commas to get them in one call. It shows
+   only what this connector was granted.
 2. `bexio_read` runs GET and search operations, `bexio_write` everything else.
 3. Before any write, tell the user exactly what will change and wait for a
    yes. Issuing, sending and deleting have effects outside the chat
@@ -22,6 +24,9 @@ call is a live request against that company's books.
 - List/search query parameters: `limit` (50 unless set, max 2000),
   `offset`, `order_by` (comma-separated, `_desc` suffix, e.g. `id_desc`),
   `show_archived`. Long results are truncated; page with `limit`/`offset`.
+- `fields` (e.g. `["id", "name_1"]`) keeps only those fields of each record;
+  use it on lists. Lists and searches leave out null fields; a single record
+  shows them all.
 - Signed-in user: `v3ShowMe`. Company: `v2ListCompanyProfile`.
 
 ## Writing (2.0 API)
