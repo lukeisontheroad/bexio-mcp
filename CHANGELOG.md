@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/lukeisontheroad/bexio-mcp/compare/v0.3.0...v0.4.0) (2026-10-22)
+
+
+### Features
+
+* leaner bexio answers and access-aware docs ([#13](https://github.com/lukeisontheroad/bexio-mcp/issues/13)) ([a20786e](https://github.com/lukeisontheroad/bexio-mcp/commit/a20786e05eadd86b4df616dd8793c9716f455753))
+
 ## [0.3.0](https://github.com/lukeisontheroad/bexio-mcp/compare/v0.2.0...v0.3.0) (2026-10-20)
 
 
