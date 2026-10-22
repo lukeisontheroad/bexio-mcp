@@ -247,8 +247,7 @@ func (a *api) caller(readOnly bool) mcp.ToolHandlerFor[callInput, any] {
 		if !write && !op.readOnly() {
 			return nil, nil, fmt.Errorf("%s changes data, but %q is read only for this connector", op.ID, area.Tag)
 		}
-		_, limited := in.Query["limit"]
-		defaulted := !limited && slices.ContainsFunc(op.params, func(p any) bool { return a.deref(p)["name"] == "limit" })
+		defaulted := in.Query["limit"] == nil && slices.ContainsFunc(op.params, func(p any) bool { return a.deref(p)["name"] == "limit" })
 		if defaulted {
 			if in.Query == nil {
 				in.Query = map[string]any{}

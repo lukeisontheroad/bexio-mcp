@@ -170,7 +170,7 @@ func TestServer(t *testing.T) {
 	// Lists without a limit get defaultLimit, not bexio's 500, and a full
 	// page says that more rows may exist.
 	fake.reply = "[" + strings.Repeat(`{"id":1},`, defaultLimit-1) + `{"id":1}]`
-	res = callTool("bexio_read", map[string]any{"operation": "v2ListContacts"})
+	res = callTool("bexio_read", map[string]any{"operation": "v2ListContacts", "query": map[string]any{"limit": nil}})
 	fake.reply = ""
 	if fake.api.URL.RawQuery != "limit=50" || !strings.HasSuffix(text(res), "more may exist; page with offset or raise limit]") {
 		t.Fatalf("list query %q answered %s", fake.api.URL.RawQuery, text(res))
